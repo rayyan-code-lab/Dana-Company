@@ -1,5 +1,8 @@
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 import { localSdk, eq, contains, or, gte, lt, isNull } from './localEngine';
+import { getTableAccess } from './userPermissions';
+
+let globalSessionInstance = null;
 
 /**
  * Dual-Mode Supabase Query Engine
@@ -66,7 +69,29 @@ class DualModeQueryBuilder {
     return this;
   }
 
+  assertPermission(action) {
+    const user = globalSessionInstance?.user?.();
+    if (!user) return;
+    const profile = user.profile || 'Manager_c';
+    const access = getTableAccess(profile, this.tableName);
+    if (!access) return;
+
+    if (action === 'read' && access.access === 'None') {
+      throw new Error(`[Security] Permission denied: Role '${profile}' has no read access to table '${this.tableName}'.`);
+    }
+    if (action === 'create' && !access.canCreate) {
+      throw new Error(`[Security] Permission denied: Role '${profile}' cannot create records in table '${this.tableName}'.`);
+    }
+    if (action === 'update' && !access.canUpdate) {
+      throw new Error(`[Security] Permission denied: Role '${profile}' cannot update records in table '${this.tableName}'.`);
+    }
+    if (action === 'delete' && !access.canDelete) {
+      throw new Error(`[Security] Permission denied: Role '${profile}' cannot delete records from table '${this.tableName}'.`);
+    }
+  }
+
   async get(id) {
+    this.assertPermission('read');
     if (!isSupabaseConfigured || !supabase) {
       return this.fallbackBuilder.get(id);
     }
@@ -92,6 +117,7 @@ class DualModeQueryBuilder {
   }
 
   async fetch() {
+    this.assertPermission('read');
     if (!isSupabaseConfigured || !supabase) {
       return this.fallbackBuilder.fetch();
     }
@@ -197,6 +223,7 @@ class DualModeQueryBuilder {
   }
 
   async create(payload) {
+    this.assertPermission('create');
     if (!isSupabaseConfigured || !supabase) {
       return this.fallbackBuilder.create(payload);
     }
@@ -241,6 +268,7 @@ class DualModeQueryBuilder {
   }
 
   async update(payload) {
+    this.assertPermission('update');
     if (!isSupabaseConfigured || !supabase) {
       return this.fallbackBuilder.update(payload);
     }
@@ -280,6 +308,7 @@ class DualModeQueryBuilder {
   }
 
   async remove(idOrIds) {
+    this.assertPermission('delete');
     const ids = Array.isArray(idOrIds) ? idOrIds.map(String) : [String(idOrIds)];
 
     if (!isSupabaseConfigured || !supabase) {
@@ -332,6 +361,7 @@ function saveCachedSessionUser(user) {
 
 class DualModeSession {
   constructor() {
+    globalSessionInstance = this;
     this.localSession = localSdk.session;
     this.subscribers = new Set();
     this.currentUser = loadCachedSessionUser();

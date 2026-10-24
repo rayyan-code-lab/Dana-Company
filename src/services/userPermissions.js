@@ -1,4 +1,4 @@
-import { createPermissions } from '@/services/permissions';
+import { createPermissions } from './permissions.js';
 
 export const PROFILES = {
   Admin_c: {

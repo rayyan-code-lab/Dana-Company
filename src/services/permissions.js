@@ -7,10 +7,11 @@ export function createPermissions(profiles, tablePermissions) {
 
   function getTableAccess(profile, table) {
     const p = tablePermissions[profile]?.[table];
-    if (!p) return { canRead: false, canCreate: false, canUpdate: false, canDelete: false };
+    if (!p) return { access: 'None', canRead: false, canCreate: false, canUpdate: false, canDelete: false };
     const a = p.access ?? '';
     const full = a === 'Full';
     return {
+      access: a,
       canRead: full || a.includes('Read'),
       canCreate: full || a.includes('Create'),
       canUpdate: full || a.includes('Update'),

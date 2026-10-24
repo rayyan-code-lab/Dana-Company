@@ -76,4 +76,24 @@ logs
 *.pid
 *.seed
 *.pid.lock
+# Security, Secrets, and Credentials
 .env
+.env.*
+!.env.example
+*.env
+*.local
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+*.secrets
+.secrets*
+secrets.*
+*credentials*.json
+*service-account*.json
+*serviceAccountKey*.json
+tokens.json
+auth.json
+scratch/
