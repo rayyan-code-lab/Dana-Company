@@ -50,38 +50,43 @@ const DATA_TABLES = [
   'workers_c',
 ];
 
-async function clearTable(table) {
-  for (let batch = 0; batch < 10000; batch += 1) {
-    const page = await sdk.table(table).select(['Id']).page(1, 100).fetch();
-    if (!page.success) throw new Error(page.message);
-    const ids = (page.data ?? []).map((row) => row.Id);
-    if (!ids.length) return;
-    const res = await sdk.table(table).remove(ids);
-    if (res.messages.length) throw new Error(res.messages.join('; '));
-  }
-  throw new Error(`${table}: batch limit reached`);
-}
-
 function ClearAllDataAction() {
   const [open, setOpen] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
 
   const handleClear = async (event) => {
     event.preventDefault();
     setIsClearing(true);
-    let current = null;
+    setStatusMessage('Starting fast parallel database wipe...');
+    const startTime = performance.now();
     try {
-      for (const table of DATA_TABLES) {
-        current = table;
-        await clearTable(table);
+      if (typeof sdk.clearAllData === 'function') {
+        await sdk.clearAllData(({ tier, totalTiers, tierName }) => {
+          setStatusMessage(`Stage ${tier}/${totalTiers}: Clearing ${tierName.toLowerCase()}...`);
+        });
+      } else {
+        for (const table of DATA_TABLES) {
+          setStatusMessage(`Clearing ${table}...`);
+          if (typeof sdk.clearTable === 'function') {
+            await sdk.clearTable(table);
+          } else {
+            await sdk.table(table).clear();
+          }
+        }
       }
-      toast.success('All app data has been cleared');
+      const duration = ((performance.now() - startTime) / 1000).toFixed(1);
+      toast.success(`All company data cleared in ${duration}s`);
       setOpen(false);
+      setTimeout(() => {
+        window.location.reload();
+      }, 700);
     } catch (error) {
-      toast.error(`Clearing stopped at ${current}`, { description: error.message, duration: 8000 });
-      console.error(`clear all data failed at ${current}: ${error.message}`);
+      toast.error('Clearing encountered an error', { description: error.message, duration: 8000 });
+      console.error('clear all data failed:', error);
     } finally {
       setIsClearing(false);
+      setStatusMessage('');
     }
   };
 
@@ -107,6 +112,12 @@ function ClearAllDataAction() {
               This permanently deletes every sale, purchase, production, payroll, expense, worker, attendance, finance and stock record. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {isClearing && statusMessage && (
+            <div className="rounded-sm bg-muted/60 p-3 text-xs font-medium text-foreground flex items-center gap-2">
+              <ApperIcon name="Loader2" size={14} className="animate-spin text-destructive" />
+              <span>{statusMessage}</span>
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isClearing}>Cancel</AlertDialogCancel>
             <AlertDialogAction variant="destructive" disabled={isClearing} onClick={handleClear}>

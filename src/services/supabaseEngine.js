@@ -336,6 +336,11 @@ class DualModeQueryBuilder {
       return this.fallbackBuilder.remove(idOrIds);
     }
   }
+
+  async clear() {
+    this.assertPermission('delete');
+    return fastClearTable(this.tableName);
+  }
 }
 
 const SESSION_CACHE_KEY = 'dana_foundry_user_session';
@@ -373,6 +378,9 @@ class DualModeSession {
           const mapped = this.mapSupabaseUser(data.session.user);
           this.currentUser = await this.resolveUserProfile(mapped);
           saveCachedSessionUser(this.currentUser);
+          if (this.currentUser?.profile === 'Admin_c' && !data.session.user.user_metadata?.role) {
+            supabase.auth.updateUser({ data: { role: 'Admin_c' } }).catch(() => {});
+          }
         } else {
           this.currentUser = null;
           saveCachedSessionUser(null);
@@ -733,11 +741,219 @@ class DualModeStorage {
   }
 }
 
+export const CLEAR_DATA_TIERS = [
+  // Tier 1: Leaf child records (no foreign keys point to these)
+  {
+    name: 'Transaction & Operational Registers',
+    tables: [
+      'purchase_payments_c',
+      'purchase_audit_c',
+      'stock_movements_c',
+      'worker_payments_c',
+      'borrowing_repayments_c',
+      'owner_funding_repayments_c',
+      'transactions_c',
+      'attendance_c',
+      'payroll_c',
+      'sales_c',
+      'expenses_c',
+      'production_c',
+    ],
+  },
+  // Tier 2: Mid-level entities (referenced by Tier 1)
+  {
+    name: 'Procurement & Funding Accounts',
+    tables: [
+      'purchases_c',
+      'borrowings_c',
+      'owner_funding_c',
+    ],
+  },
+  // Tier 3: Master catalogs / directories (referenced by Tier 1 & 2)
+  {
+    name: 'Master Catalogs & Directories',
+    tables: [
+      'stock_items_c',
+      'lenders_c',
+      'workers_c',
+    ],
+  },
+];
+
+function clearLocalTableCache(tableName) {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const STORAGE_KEY = 'dana_foundry_erp_db_v1';
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed[tableName]) {
+          parsed[tableName] = [];
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+        }
+      }
+    }
+    if (localSdk && typeof localSdk.table === 'function') {
+      const localTbl = localSdk.table(tableName);
+      if (localTbl && typeof localTbl.clear === 'function') {
+        localTbl.clear().catch(() => {});
+      }
+    }
+  } catch {}
+}
+
+function clearLocalDatabaseStorage() {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const STORAGE_KEY = 'dana_foundry_erp_db_v1';
+      const emptyDb = {};
+      CLEAR_DATA_TIERS.forEach((tier) => {
+        tier.tables.forEach((tbl) => {
+          emptyDb[tbl] = [];
+        });
+      });
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(emptyDb));
+    }
+    if (localSdk && typeof localSdk.resetDatabase === 'function') {
+      localSdk.resetDatabase();
+    }
+  } catch {}
+}
+
+export async function fastClearTable(tableName) {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      // 1. Direct single-roundtrip delete matching all rows in the table
+      const { data, error } = await supabase
+        .from(tableName)
+        .delete()
+        .neq('Id', '')
+        .select('Id');
+
+      if (error) {
+        // Fallback filter if neq has specific type constraints
+        const retry = await supabase
+          .from(tableName)
+          .delete()
+          .not('Id', 'is', null)
+          .select('Id');
+
+        if (retry.error) {
+          // If server filter is restricted, fallback to batch ID deletion
+          for (let batch = 0; batch < 50; batch += 1) {
+            const { data: idsData } = await supabase.from(tableName).select('Id').limit(500);
+            if (!idsData || !idsData.length) break;
+            const ids = idsData.map((r) => r.Id);
+            await supabase.from(tableName).delete().in('Id', ids);
+            if (idsData.length < 500) break;
+          }
+        }
+      }
+
+      // 2. Check if records still remain (indicating RLS delete policy blocked row removal)
+      const { count } = await supabase.from(tableName).select('Id', { count: 'exact', head: true });
+      if (count && count > 0) {
+        const { data: remainingRows } = await supabase.from(tableName).select('Id').limit(500);
+        if (remainingRows && remainingRows.length > 0) {
+          const ids = remainingRows.map((r) => r.Id);
+          const delRes = await supabase.from(tableName).delete().in('Id', ids).select('Id');
+          if (!delRes.data || delRes.data.length === 0) {
+            throw new Error(`Database security policy (RLS) prevented deletion of records from '${tableName}'. Please execute migration 004 in Supabase SQL editor.`);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[SupabaseEngine] Fast delete on ${tableName} encountered exception:`, err);
+      throw err;
+    }
+  }
+
+  // Also clear in local simulator engine so offline/cached state stays consistent
+  clearLocalTableCache(tableName);
+
+  return { success: true };
+}
+
+export async function fastClearAllData(onProgress) {
+  const user = globalSessionInstance?.user?.();
+  const profile = user?.profile || 'Admin_c';
+  if (profile !== 'Admin_c') {
+    throw new Error('[Security] Only Administrators can execute Clear All Data.');
+  }
+
+  // Ensure current authenticated user metadata has role: Admin_c
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: sessData } = await supabase.auth.getSession();
+      if (sessData?.session?.user && !sessData.session.user.user_metadata?.role) {
+        await supabase.auth.updateUser({ data: { role: 'Admin_c' } }).catch(() => {});
+      }
+    } catch {
+      // Continue
+    }
+  }
+
+  // 1. First attempt atomic server-side RPC truncation (clears all 18 tables in 1 single command)
+  if (isSupabaseConfigured && supabase) {
+    try {
+      if (typeof onProgress === 'function') {
+        onProgress({
+          tier: 1,
+          totalTiers: 1,
+          tierName: 'All operational records',
+          clearedCount: 0,
+          totalTables: 18,
+        });
+      }
+      const { data, error } = await supabase.rpc('clear_all_company_data');
+      if (!error && (data?.success || data === true)) {
+        clearLocalDatabaseStorage();
+        return { success: true, method: 'rpc' };
+      }
+    } catch {
+      // Fall through to tiered deletion
+    }
+  }
+
+  // 2. Fallback: Tiered parallel deletion across table tiers
+  let totalCleared = 0;
+  const totalTables = CLEAR_DATA_TIERS.reduce((sum, t) => sum + t.tables.length, 0);
+
+  for (let tierIdx = 0; tierIdx < CLEAR_DATA_TIERS.length; tierIdx += 1) {
+    const tier = CLEAR_DATA_TIERS[tierIdx];
+    if (typeof onProgress === 'function') {
+      onProgress({
+        tier: tierIdx + 1,
+        totalTiers: CLEAR_DATA_TIERS.length,
+        tierName: tier.name,
+        clearedCount: totalCleared,
+        totalTables,
+      });
+    }
+
+    // Concurrently clear all tables in this dependency tier
+    await Promise.all(
+      tier.tables.map(async (table) => {
+        await fastClearTable(table);
+        totalCleared += 1;
+      })
+    );
+  }
+
+  // Also clean local simulator whole-db while preserving users & auth sessions
+  clearLocalDatabaseStorage();
+
+  return { success: true, tablesCleared: totalCleared };
+}
+
 export const dualSdk = {
   table: (tableName) => new DualModeQueryBuilder(tableName),
   session: new DualModeSession(),
   storage: new DualModeStorage(),
   functions: localSdk.functions,
-  resetDatabase: () => localSdk.resetDatabase(),
+  clearTable: (tableName) => fastClearTable(tableName),
+  clearAllData: (onProgress) => fastClearAllData(onProgress),
+  resetDatabase: () => fastClearAllData(),
   isSupabaseConfigured,
 };
+

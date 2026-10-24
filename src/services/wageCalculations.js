@@ -82,6 +82,7 @@ export function calculateWorkerWageSummary({
   const fullDays = periodAttendance.filter((row) => unitsForStatus(row.status_c) === 1).length;
   const halfDays = periodAttendance.filter((row) => unitsForStatus(row.status_c) === 0.5).length;
   const attendanceUnits = roundMoney(periodAttendance.reduce((sum, row) => sum + unitsForStatus(row.status_c), 0));
+  const overtimeHours = roundMoney(periodAttendance.reduce((sum, row) => sum + Number(row.overtimeHours_c || 0), 0));
   const workerPayments = payments.filter((row) => sameWorker(row, worker));
   const paymentsThroughPeriod = workerPayments.filter((row) => row.paymentDate_c && row.paymentDate_c <= range.end);
   const periodPayments = paymentsThroughPeriod.filter((row) => row.paymentDate_c >= range.start && row.paymentDate_c <= range.end);
@@ -113,6 +114,7 @@ export function calculateWorkerWageSummary({
     fullDays,
     halfDays,
     attendanceUnits,
+    overtimeHours,
     earned,
     cumulativeEarned,
     periodPaid,

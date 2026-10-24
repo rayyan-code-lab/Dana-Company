@@ -169,7 +169,7 @@ export default function AttendanceDaybook() {
         sourceRecord: record ?? null,
         status: record ? storedToUiStatus(record.status_c) : 'Unmarked',
         wage: Number(defaultRate),
-        overtimeHours: record?.overtimeHours_c ?? '',
+        overtimeHours: (record?.overtimeHours_c != null && Number(record.overtimeHours_c) > 0) ? String(record.overtimeHours_c) : '',
         notes: record?.notes_c ?? '',
       };
     });
@@ -381,11 +381,11 @@ export default function AttendanceDaybook() {
         }
         const payload = {
           Name: worker.Name + ' · ' + selectedDate,
-          worker_c: worker.Id,
+          worker_c: { Id: worker.Id, Name: worker.Name },
           attendanceDate_c: selectedDate,
           status_c: storedStatus,
           hoursWorked_c: current?.hoursWorked_c ?? null,
-          overtimeHours_c: overtimeHours,
+          overtimeHours_c: overtimeHours != null ? overtimeHours : 0,
           notes_c: String(draft.notes ?? '').trim(),
           wagePerDay_c: wageSnapshot,
           attendanceUnits_c: units,
@@ -437,8 +437,13 @@ export default function AttendanceDaybook() {
     if (!searchTerm) return true;
     return String(row.Name ?? '').toLocaleLowerCase().includes(searchTerm)
       || String(row.worker_c?.Name ?? '').toLocaleLowerCase().includes(searchTerm)
-      || String(row.status_c ?? '').toLocaleLowerCase().includes(searchTerm);
+      || String(row.status_c ?? '').toLocaleLowerCase().includes(searchTerm)
+      || (Number(row.overtimeHours_c) > 0 && `${row.overtimeHours_c} ot overtime`.includes(searchTerm));
   }).sort((a, b) => String(b.attendanceDate_c).localeCompare(String(a.attendanceDate_c)));
+
+  const totalPeriodOtHours = useMemo(() => {
+    return roundMoney(filteredHistory.reduce((sum, row) => sum + Number(row.overtimeHours_c || 0), 0));
+  }, [filteredHistory]);
 
   return (
     <div className="space-y-6">
@@ -599,13 +604,38 @@ export default function AttendanceDaybook() {
             <Input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Search worker, date, or status…" className="min-h-10 rounded-sm pl-9" aria-label="Search attendance history" />
           </div>
           <section className="overflow-hidden border border-border bg-card">
-            <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="text-sm font-semibold">Saved attendance</h2><span className="text-xs text-muted-foreground">{filteredHistory.length} entries · {period.label}</span></div>
+            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+              <div>
+                <h2 className="text-sm font-semibold">Saved attendance</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {filteredHistory.length} entries{totalPeriodOtHours > 0 ? ` · ${totalPeriodOtHours} total OT hrs` : ''} · {period.label}
+                </p>
+              </div>
+            </div>
             {historyLoading ? <div className="space-y-3 p-5"><Skeleton className="h-8 w-full" /><Skeleton className="h-8 w-full" /></div>
               : historyError ? <div className="p-5 text-sm text-destructive">{String(historyError?.message ?? historyError)} <Button size="sm" variant="outline" onClick={() => reloadHistory()}>Retry</Button></div>
                 : filteredHistory.length === 0 ? <div className="p-8 text-center"><p className="font-semibold">No attendance for this period</p><p className="mt-1 text-sm text-muted-foreground">Choose another period or switch back to the daybook.</p></div>
-                  : <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Worker</th><th className="px-4 py-3">Status</th><th className="px-4 py-3 text-right">Wage snapshot</th><th className="px-4 py-3 text-right">Earned</th><th className="px-4 py-3">Notes</th><th className="px-4 py-3">Action</th></tr></thead><tbody className="divide-y divide-border">{filteredHistory.map((row) => {
+                  : <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Worker</th><th className="px-4 py-3">Status</th><th className="px-4 py-3 text-right">OT (Hrs)</th><th className="px-4 py-3 text-right">Wage snapshot</th><th className="px-4 py-3 text-right">Earned</th><th className="px-4 py-3">Notes</th><th className="px-4 py-3">Action</th></tr></thead><tbody className="divide-y divide-border">{filteredHistory.map((row) => {
                     const worker = workers.find((item) => String(item.Id) === lookupId(row.worker_c)) ?? { Id: lookupId(row.worker_c), Name: row.worker_c?.Name ?? 'Unknown worker' };
-                    return <tr key={row.Id}><td className="whitespace-nowrap px-4 py-3">{toLocalDateLabel(row.attendanceDate_c)}</td><td className="px-4 py-3 font-medium">{worker.Name}</td><td className="px-4 py-3">{row.status_c === 'Present' ? 'Full day' : row.status_c}</td><td className="px-4 py-3 text-right tabular-nums">{cash(row.wagePerDay_c ?? worker.dailyRate_c ?? 0)}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{row.status_c === 'Unmarked' ? 'Pending' : cash(attendanceEarnings(row, worker))}</td><td className="max-w-56 px-4 py-3 text-muted-foreground">{row.notes_c || '—'}</td><td className="px-4 py-3"><Button type="button" size="sm" variant="outline" className="rounded-sm" onClick={() => { if (dirty && !window.confirm('Discard unsaved attendance changes?')) return; setDirty(false); setSelectedDate(row.attendanceDate_c); setView('daybook'); }}>Correct</Button></td></tr>;
+                    const otHrs = Number(row.overtimeHours_c || 0);
+                    return <tr key={row.Id}>
+                      <td className="whitespace-nowrap px-4 py-3">{toLocalDateLabel(row.attendanceDate_c)}</td>
+                      <td className="px-4 py-3 font-medium">{worker.Name}</td>
+                      <td className="px-4 py-3">{row.status_c === 'Present' ? 'Full day' : row.status_c}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {otHrs > 0 ? (
+                          <span className="inline-flex items-center rounded-sm bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
+                            +{otHrs} hrs
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">{cash(row.wagePerDay_c ?? worker.dailyRate_c ?? 0)}</td>
+                      <td className="px-4 py-3 text-right font-semibold tabular-nums">{row.status_c === 'Unmarked' ? 'Pending' : cash(attendanceEarnings(row, worker))}</td>
+                      <td className="max-w-56 px-4 py-3 text-muted-foreground">{row.notes_c || '—'}</td>
+                      <td className="px-4 py-3"><Button type="button" size="sm" variant="outline" className="rounded-sm" onClick={() => { if (dirty && !window.confirm('Discard unsaved attendance changes?')) return; setDirty(false); setSelectedDate(row.attendanceDate_c); setView('daybook'); }}>Correct</Button></td>
+                    </tr>;
                   })}</tbody></table></div>}
           </section>
         </section>
