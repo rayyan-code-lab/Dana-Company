@@ -758,6 +758,7 @@ export const CLEAR_DATA_TIERS = [
       'sales_c',
       'expenses_c',
       'production_c',
+      'wastage_c',
     ],
   },
   // Tier 2: Mid-level entities (referenced by Tier 1)

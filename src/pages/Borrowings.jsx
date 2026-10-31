@@ -11,7 +11,7 @@ import { formatInr } from '@/services/purchaseWorkflow';
 import { getBorrowings } from '@/services/borrowingWorkflow';
 
 export const route = { path: '/borrowings', layout: 'owner', access: "profile === 'Admin_c'" };
-export const nav = { icon: 'Wallet', label: 'Borrowings', section: 'Finance', profiles: ['Admin_c'], order: 43 };
+export const nav = { icon: 'Wallet', label: 'Borrowings', section: 'Finance', profiles: ['Admin_c'], order: 45 };
 
 const dateLabel = (value) => value ? formatLocalDate(value, DATE_FORMATS.SHORT) : '—';
 const amount = (value) => Number(value ?? 0);

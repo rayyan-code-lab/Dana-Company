@@ -59,6 +59,7 @@ const TABLE_PERMISSIONS = {
     owner_funding_c: { access: 'Full' },
     owner_funding_repayments_c: { access: 'Full' },
     production_c: { access: 'Full' },
+    wastage_c: { access: 'Full' },
   },
   Manager_c: {
     stock_movements_c: { access: 'Read,Create,Update' },
@@ -82,6 +83,7 @@ const TABLE_PERMISSIONS = {
     owner_funding_c: { access: 'None' },
     owner_funding_repayments_c: { access: 'None' },
     production_c: { access: 'Read,Create,Update' },
+    wastage_c: { access: 'Read,Create,Update,Delete' },
   },
 };
 

@@ -42,6 +42,7 @@ const DATA_TABLES = [
   'sales_c',
   'expenses_c',
   'production_c',
+  'wastage_c',
   'purchases_c',
   'stock_items_c',
   'borrowings_c',

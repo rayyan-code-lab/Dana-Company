@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 
-const WORKER_FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c'];
+const WORKER_FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'shift_c', 'shiftTiming_c'];
 const ATTENDANCE_FIELDS = [
   'Name',
   'worker_c',
@@ -21,6 +21,8 @@ const ATTENDANCE_FIELDS = [
   'status_c',
   'hoursWorked_c',
   'overtimeHours_c',
+  'shift_c',
+  'shiftTiming_c',
   'notes_c',
   'wagePerDay_c',
   'attendanceUnits_c',
@@ -30,11 +32,8 @@ const ATTENDANCE_FIELDS = [
 ];
 
 const STATUS_OPTIONS = [
-  { key: 'Full Day', stored: 'Present', label: 'Full day' },
-  { key: 'Half Day', stored: 'Half Day', label: 'Half day' },
-  { key: 'Absent', stored: 'Absent', label: 'Absent' },
+  { key: 'Present', stored: 'Present', label: 'Present' },
   { key: 'Leave', stored: 'Leave', label: 'Leave' },
-  { key: 'Unmarked', stored: 'Unmarked', label: 'Unmarked' },
 ];
 
 function lookupId(value) {
@@ -45,8 +44,59 @@ function normalizeName(value) {
   return String(value ?? '').trim().toLocaleLowerCase();
 }
 
+function to24h(time12) {
+  if (!time12) return '';
+  const match = String(time12).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!match) return '';
+  let hours = parseInt(match[1], 10);
+  const minutes = match[2];
+  const period = (match[3] || '').toUpperCase();
+  if (period === 'PM' && hours < 12) hours += 12;
+  if (period === 'AM' && hours === 12) hours = 0;
+  return `${String(hours).padStart(2, '0')}:${minutes}`;
+}
+
+function to12h(time24) {
+  if (!time24) return '';
+  const match = String(time24).trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return time24;
+  let hours = parseInt(match[1], 10);
+  const minutes = match[2];
+  const period = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${String(hours).padStart(2, '0')}:${minutes} ${period}`;
+}
+
+function parseTimings(timingString, defaultShift = 'Day Shift') {
+  const isNight = defaultShift === 'Night Shift';
+  const fallbackIn = isNight ? '21:00' : '09:00';
+  const fallbackOut = isNight ? '09:00' : '21:00';
+
+  if (!timingString || typeof timingString !== 'string') {
+    return { arrivalTime: fallbackIn, leavingTime: fallbackOut };
+  }
+
+  const parts = timingString.split(/\s*[-–—]\s*/);
+  if (parts.length >= 2) {
+    const in24 = to24h(parts[0]) || fallbackIn;
+    const out24 = to24h(parts[1]) || fallbackOut;
+    return { arrivalTime: in24, leavingTime: out24 };
+  }
+  return { arrivalTime: fallbackIn, leavingTime: fallbackOut };
+}
+
+function formatCombinedTiming(arrivalTime, leavingTime) {
+  if (!arrivalTime && !leavingTime) return '';
+  const inStr = to12h(arrivalTime || '09:00');
+  const outStr = to12h(leavingTime || '21:00');
+  return `${inStr} - ${outStr}`;
+}
+
 function storedToUiStatus(status) {
-  return status === 'Present' ? 'Full Day' : STATUS_OPTIONS.some((item) => item.key === status) ? status : 'Unmarked';
+  if (!status) return 'Present';
+  const s = String(status).toLowerCase();
+  if (s === 'leave' || s === 'absent') return 'Leave';
+  return 'Present';
 }
 
 function toLocalDateLabel(value) {
@@ -90,8 +140,7 @@ function findRecordForWorker(records, worker) {
 }
 
 function dailyStatusEarnings(status, wage) {
-  if (status === 'Full Day') return roundMoney(Number(wage) || 0);
-  if (status === 'Half Day') return roundMoney((Number(wage) || 0) / 2);
+  if (status === 'Present') return roundMoney(Number(wage) || 0);
   return 0;
 }
 
@@ -102,13 +151,17 @@ export default function AttendanceDaybook() {
   const [selectedDate, setSelectedDate] = useState(todayLocalDate());
   const [view, setView] = useState('daybook');
   const [search, setSearch] = useState('');
+  const [shiftFilter, setShiftFilter] = useState('All');
   const [drafts, setDrafts] = useState({});
   const [pendingHelpers, setPendingHelpers] = useState([]);
   const [helperOpen, setHelperOpen] = useState(false);
   const [helperForm, setHelperForm] = useState({
     name: '',
     dailyRate: '',
-    status: 'Full Day',
+    status: 'Present',
+    shift: 'Day Shift',
+    arrivalTime: '09:00',
+    leavingTime: '21:00',
     notes: '',
     saveForFuture: false,
   });
@@ -164,10 +217,17 @@ export default function AttendanceDaybook() {
     roster.forEach((worker) => {
       const record = findRecordForWorker(dayRecords, worker);
       const defaultRate = record?.wagePerDay_c ?? worker.dailyRate_c ?? 0;
+      const shift = record?.shift_c || worker.shift_c || 'Day Shift';
+      const existingTimingStr = record?.shiftTiming_c || worker.shiftTiming_c || (shift === 'Night Shift' ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM');
+      const { arrivalTime, leavingTime } = parseTimings(existingTimingStr, shift);
       next[String(worker.Id)] = {
         recordId: record?.Id ?? null,
         sourceRecord: record ?? null,
-        status: record ? storedToUiStatus(record.status_c) : 'Unmarked',
+        status: record ? storedToUiStatus(record.status_c) : 'Present',
+        shift,
+        arrivalTime,
+        leavingTime,
+        shiftTiming: existingTimingStr,
         wage: Number(defaultRate),
         overtimeHours: (record?.overtimeHours_c != null && Number(record.overtimeHours_c) > 0) ? String(record.overtimeHours_c) : '',
         notes: record?.notes_c ?? '',
@@ -178,16 +238,21 @@ export default function AttendanceDaybook() {
   }, [selectedDate, dayData]);
 
   const visibleWorkers = roster.filter((worker) => {
+    const draft = drafts[String(worker.Id)];
+    const currentShift = draft?.shift || worker.shift_c || 'Day Shift';
+    if (shiftFilter !== 'All' && currentShift !== shiftFilter) return false;
     if (!search.trim()) return true;
     const query = search.trim().toLocaleLowerCase();
     return String(worker.Name).toLocaleLowerCase().includes(query)
-      || String(worker.role_c ?? '').toLocaleLowerCase().includes(query);
+      || String(worker.role_c ?? '').toLocaleLowerCase().includes(query)
+      || String(currentShift).toLocaleLowerCase().includes(query)
+      || String(draft?.shiftTiming ?? '').toLocaleLowerCase().includes(query);
   });
 
-  const countStatus = (status) => roster.filter((worker) => (drafts[String(worker.Id)]?.status ?? 'Unmarked') === status).length;
+  const countStatus = (status) => roster.filter((worker) => (drafts[String(worker.Id)]?.status ?? 'Present') === status).length;
   const earnedTotal = roster.reduce((sum, worker) => {
     const draft = drafts[String(worker.Id)];
-    if (!draft || draft.status === 'Unmarked') return sum;
+    if (!draft) return sum;
     return sum + dailyStatusEarnings(draft.status, draft.wage);
   }, 0);
 
@@ -203,8 +268,10 @@ export default function AttendanceDaybook() {
     const key = String(worker.Id);
     setDrafts((current) => {
       const prior = current[key] ?? {
-        status: 'Unmarked',
+        status: 'Present',
         wage: Number(worker.dailyRate_c ?? 0),
+        arrivalTime: '09:00',
+        leavingTime: '21:00',
         overtimeHours: '',
         notes: '',
         sourceRecord: null,
@@ -229,6 +296,8 @@ export default function AttendanceDaybook() {
       return;
     }
 
+    const timing = formatCombinedTiming(helperForm.arrivalTime, helperForm.leavingTime);
+
     let existing = workers.find((worker) => normalizeName(worker.Name) === normalizeName(name));
     const alreadyListed = roster.find((worker) => normalizeName(worker.Name) === normalizeName(name));
     if (alreadyListed) {
@@ -238,6 +307,10 @@ export default function AttendanceDaybook() {
         [key]: {
           ...(current[key] ?? {}),
           status: helperForm.status,
+          shift: helperForm.shift,
+          arrivalTime: helperForm.arrivalTime,
+          leavingTime: helperForm.leavingTime,
+          shiftTiming: timing,
           wage: rate,
           notes: helperForm.notes.trim(),
           overtimeHours: current[key]?.overtimeHours ?? '',
@@ -247,7 +320,7 @@ export default function AttendanceDaybook() {
       }));
       toast.info('This worker is already in today’s list. Their attendance draft has been updated.');
       setHelperOpen(false);
-      setHelperForm({ name: '', dailyRate: '', status: 'Full Day', notes: '', saveForFuture: false });
+      setHelperForm({ name: '', dailyRate: '', status: 'Present', shift: 'Day Shift', arrivalTime: '09:00', leavingTime: '21:00', notes: '', saveForFuture: false });
       setDirty(true);
       return;
     }
@@ -255,12 +328,14 @@ export default function AttendanceDaybook() {
     const candidateKey = globalThis.crypto?.randomUUID?.() || String(Date.now());
     const key = existing ? String(existing.Id) : 'pending-' + candidateKey;
     const helper = existing
-      ? { ...existing, dailyRate_c: rate, workerType_c: existing.workerType_c || 'Temporary', _oneDayHelper: true, _saveForFuture: helperForm.saveForFuture }
+      ? { ...existing, dailyRate_c: rate, shift_c: helperForm.shift, shiftTiming_c: timing, workerType_c: existing.workerType_c || 'Temporary', _oneDayHelper: true, _saveForFuture: helperForm.saveForFuture }
       : {
           Id: key,
           Name: name,
           role_c: 'Helper',
           dailyRate_c: rate,
+          shift_c: helperForm.shift,
+          shiftTiming_c: timing,
           status_c: helperForm.saveForFuture ? 'Active' : 'Inactive',
           joinedOn_c: selectedDate,
           notes_c: helperForm.notes.trim(),
@@ -276,12 +351,16 @@ export default function AttendanceDaybook() {
         recordId: null,
         sourceRecord: null,
         status: helperForm.status,
+        shift: helperForm.shift,
+        arrivalTime: helperForm.arrivalTime,
+        leavingTime: helperForm.leavingTime,
+        shiftTiming: timing,
         wage: rate,
         overtimeHours: '',
         notes: helperForm.notes.trim(),
       },
     }));
-    setHelperForm({ name: '', dailyRate: '', status: 'Full Day', notes: '', saveForFuture: false });
+    setHelperForm({ name: '', dailyRate: '', status: 'Present', shift: 'Day Shift', arrivalTime: '09:00', leavingTime: '21:00', notes: '', saveForFuture: false });
     setHelperOpen(false);
     setDirty(true);
     toast.success('Helper added to the daybook. Save attendance to record the entry.');
@@ -294,6 +373,8 @@ export default function AttendanceDaybook() {
         const result = await sdk.table('workers_c').update({
           Id: existing.Id,
           dailyRate_c: Number(helper.dailyRate_c),
+          shift_c: helper.shift_c || 'Day Shift',
+          shiftTiming_c: helper.shiftTiming_c || '09:00 AM - 09:00 PM',
           status_c: 'Active',
           workerType_c: 'Temporary',
         });
@@ -308,6 +389,8 @@ export default function AttendanceDaybook() {
       role_c: 'Helper',
       phone_c: '',
       dailyRate_c: Number(helper.dailyRate_c),
+      shift_c: helper.shift_c || 'Day Shift',
+      shiftTiming_c: helper.shiftTiming_c || '09:00 AM - 09:00 PM',
       status_c: helper._saveForFuture ? 'Active' : 'Inactive',
       joinedOn_c: selectedDate,
       notes_c: helper.notes_c || 'Temporary helper. Added from the attendance daybook.',
@@ -352,7 +435,6 @@ export default function AttendanceDaybook() {
         if (!draft || !worker?.Id) continue;
 
         const record = findRecordForWorker(freshDay.records, worker);
-        if (draft.status === 'Unmarked' && !record) continue;
 
         const key = String(worker.Id) + ':' + selectedDate;
         if (attendanceKeySeen.has(key)) {
@@ -371,14 +453,15 @@ export default function AttendanceDaybook() {
           existingByKey = response.data ?? [];
         }
         const current = record ?? existingByKey[0] ?? null;
-        const storedStatus = draft.status === 'Full Day' ? 'Present' : draft.status;
+        const storedStatus = draft.status === 'Leave' ? 'Leave' : 'Present';
         const wageSnapshot = current?.wagePerDay_c != null ? Number(current.wagePerDay_c) : Number(draft.wage ?? worker.dailyRate_c ?? 0);
-        const units = unitsForStatus(storedStatus);
+        const units = storedStatus === 'Present' ? 1 : 0;
         const earned = roundMoney(wageSnapshot * units);
         const overtimeHours = draft.overtimeHours === '' ? null : Number(draft.overtimeHours);
         if (overtimeHours != null && (!Number.isFinite(overtimeHours) || overtimeHours < 0)) {
           throw new Error('Overtime hours cannot be negative for ' + worker.Name + '.');
         }
+        const combinedTiming = formatCombinedTiming(draft.arrivalTime, draft.leavingTime);
         const payload = {
           Name: worker.Name + ' · ' + selectedDate,
           worker_c: { Id: worker.Id, Name: worker.Name },
@@ -386,6 +469,8 @@ export default function AttendanceDaybook() {
           status_c: storedStatus,
           hoursWorked_c: current?.hoursWorked_c ?? null,
           overtimeHours_c: overtimeHours != null ? overtimeHours : 0,
+          shift_c: draft.shift || worker.shift_c || 'Day Shift',
+          shiftTiming_c: combinedTiming,
           notes_c: String(draft.notes ?? '').trim(),
           wagePerDay_c: wageSnapshot,
           attendanceUnits_c: units,
@@ -394,7 +479,7 @@ export default function AttendanceDaybook() {
           workerTypeSnapshot_c: originalWorker._oneDayHelper || worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular',
         };
         if (current?.Id) updates.push({ ...payload, Id: current.Id });
-        else if (draft.status !== 'Unmarked') creates.push(payload);
+        else creates.push(payload);
       }
 
       let createResponse = { data: [], messages: [], partial: false };
@@ -494,8 +579,49 @@ export default function AttendanceDaybook() {
                 <div>
                   <label htmlFor="helper-status" className="mb-1.5 block text-sm font-medium">Attendance status *</label>
                   <select id="helper-status" value={helperForm.status} onChange={(event) => setHelperForm((current) => ({ ...current, status: event.target.value }))} className="min-h-10 w-full rounded-sm border border-input bg-background px-3 text-sm">
-                    {STATUS_OPTIONS.filter((option) => option.key !== 'Unmarked').map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                    {STATUS_OPTIONS.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
                   </select>
+                </div>
+                <div>
+                  <label htmlFor="helper-shift" className="mb-1.5 block text-sm font-medium">Assigned shift</label>
+                  <select
+                    id="helper-shift"
+                    value={helperForm.shift}
+                    onChange={(event) => {
+                      const newShift = event.target.value;
+                      const isNight = newShift === 'Night Shift';
+                      setHelperForm((current) => ({
+                        ...current,
+                        shift: newShift,
+                        arrivalTime: isNight ? '21:00' : '09:00',
+                        leavingTime: isNight ? '09:00' : '21:00',
+                      }));
+                    }}
+                    className="min-h-10 w-full rounded-sm border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="Day Shift">Day Shift</option>
+                    <option value="Night Shift">Night Shift</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="helper-arrival" className="mb-1.5 block text-sm font-medium">Arrival time (In)</label>
+                  <Input
+                    id="helper-arrival"
+                    type="time"
+                    value={helperForm.arrivalTime}
+                    onChange={(event) => setHelperForm((current) => ({ ...current, arrivalTime: event.target.value }))}
+                    className="min-h-10 rounded-sm"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="helper-leaving" className="mb-1.5 block text-sm font-medium">Leaving time (Out)</label>
+                  <Input
+                    id="helper-leaving"
+                    type="time"
+                    value={helperForm.leavingTime}
+                    onChange={(event) => setHelperForm((current) => ({ ...current, leavingTime: event.target.value }))}
+                    className="min-h-10 rounded-sm"
+                  />
                 </div>
                 <div>
                   <label htmlFor="helper-notes" className="mb-1.5 block text-sm font-medium">Notes (optional)</label>
@@ -513,21 +639,40 @@ export default function AttendanceDaybook() {
             </section>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-            <Summary label="Full day" value={countStatus('Full Day')} />
-            <Summary label="Half day" value={countStatus('Half Day')} />
-            <Summary label="Absent" value={countStatus('Absent')} />
-            <Summary label="Leave" value={countStatus('Leave')} />
-            <Summary label="Pending / unmarked" value={countStatus('Unmarked')} />
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <Summary label="Present" value={countStatus('Present')} />
+            <Summary label="On Leave" value={countStatus('Leave')} />
             <section className="border border-border bg-card p-4">
-              <p className="text-xs font-medium text-muted-foreground">Earned wages · marked only</p>
+              <p className="text-xs font-medium text-muted-foreground">Earned wages today</p>
               <p className="mt-2 font-heading text-xl font-semibold tabular-nums">{cash(earnedTotal)}</p>
             </section>
           </div>
 
-          <div className="relative max-w-lg">
-            <ApperIcon name="Search" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search worker or role…" className="min-h-10 rounded-sm pl-9" aria-label="Search workers in attendance" />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative max-w-md flex-1">
+              <ApperIcon name="Search" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search worker, shift, or timings…" className="min-h-10 rounded-sm pl-9" aria-label="Search workers in attendance" />
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-xs font-medium text-muted-foreground">Shift:</span>
+              {['All', 'Day Shift', 'Night Shift'].map((s) => {
+                const count = s === 'All'
+                  ? roster.length
+                  : roster.filter((w) => (drafts[String(w.Id)]?.shift || w.shift_c || 'Day Shift') === s).length;
+                return (
+                  <Button
+                    key={s}
+                    type="button"
+                    size="sm"
+                    variant={shiftFilter === s ? 'default' : 'outline'}
+                    className="h-9 rounded-sm text-xs"
+                    onClick={() => setShiftFilter(s)}
+                  >
+                    {s === 'All' ? 'All Shifts' : s} ({count})
+                  </Button>
+                );
+              })}
+            </div>
           </div>
 
           <section className="overflow-hidden border border-border bg-card">
@@ -544,43 +689,156 @@ export default function AttendanceDaybook() {
             ) : (
               <div className="divide-y divide-border" aria-busy={saving || dayLoading}>
                 {visibleWorkers.map((worker) => {
-                  const draft = drafts[String(worker.Id)] ?? { status: 'Unmarked', wage: Number(worker.dailyRate_c ?? 0), overtimeHours: '', notes: '' };
+                  const draft = drafts[String(worker.Id)] ?? { status: 'Present', wage: Number(worker.dailyRate_c ?? 0), arrivalTime: '09:00', leavingTime: '21:00', overtimeHours: '', notes: '' };
                   const pending = Boolean(worker._pendingHelper);
+                  const isPresent = draft.status === 'Present';
+                  const isLeave = draft.status === 'Leave';
                   const earnings = dailyStatusEarnings(draft.status, draft.wage);
                   return (
-                    <div key={worker.Id} className="grid gap-3 px-4 py-4 lg:grid-cols-[minmax(160px,1fr)_100px_minmax(300px,1.6fr)_110px] lg:items-center">
-                      <div className="min-w-0">
-                        <p className="truncate font-semibold">{worker.Name}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">{worker.role_c || 'Helper'} · {worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular'}{worker.status_c === 'Inactive' ? ' · Inactive profile' : ''}{pending ? ' · New helper' : ''}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-muted-foreground">Daily wage</p>
-                        <p className="mt-1 font-semibold tabular-nums">{cash(draft.wage)}</p>
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {STATUS_OPTIONS.map((option) => (
-                          <Button key={option.key} type="button" size="sm" variant={draft.status === option.key ? 'default' : 'outline'} className="min-h-10 rounded-sm px-3" aria-pressed={draft.status === option.key} onClick={() => changeStatus(worker, option.key)}>
-                            {option.label}
+                    <div key={worker.Id} className="space-y-3 px-4 py-4">
+                      <div className="grid gap-3 sm:grid-cols-[minmax(180px,1.2fr)_100px_minmax(280px,1.5fr)_110px] sm:items-center">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="truncate font-semibold">{worker.Name}</p>
+                            <span className={`inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-semibold ${
+                              (draft.shift || worker.shift_c) === 'Night Shift'
+                                ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                                : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                            }`}>
+                              {draft.shift || worker.shift_c || 'Day Shift'}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-muted-foreground">{worker.role_c || 'Helper'} · {worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular'}{worker.status_c === 'Inactive' ? ' · Inactive profile' : ''}{pending ? ' · New helper' : ''}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Daily wage</p>
+                          <p className="mt-1 font-semibold tabular-nums">{cash(draft.wage)}</p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className={`min-h-10 rounded-sm px-4 font-semibold ${
+                              isPresent
+                                ? 'bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-700'
+                                : 'border border-border bg-background text-muted-foreground hover:bg-muted'
+                            }`}
+                            aria-pressed={isPresent}
+                            onClick={() => changeStatus(worker, 'Present')}
+                          >
+                            <ApperIcon name="Check" size={14} className="mr-1.5" />
+                            Present
                           </Button>
-                        ))}
-                        <div className="flex items-center gap-2">
-                          <label htmlFor={'attendance-ot-' + worker.Id} className="sr-only">Overtime hours</label>
-                          <Input id={'attendance-ot-' + worker.Id} type="number" min="0" step="0.25" value={draft.overtimeHours ?? ''} onChange={(event) => {
-                            setDrafts((current) => ({ ...current, [String(worker.Id)]: { ...draft, overtimeHours: event.target.value } }));
-                            setDirty(true);
-                          }} placeholder="OT hrs" className="h-10 w-24 rounded-sm" />
+                          <Button
+                            type="button"
+                            size="sm"
+                            className={`min-h-10 rounded-sm px-4 font-semibold ${
+                              isLeave
+                                ? 'bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-600 dark:hover:bg-rose-700'
+                                : 'border border-border bg-background text-muted-foreground hover:bg-muted'
+                            }`}
+                            aria-pressed={isLeave}
+                            onClick={() => changeStatus(worker, 'Leave')}
+                          >
+                            <ApperIcon name="X" size={14} className="mr-1.5" />
+                            Leave
+                          </Button>
+                          <div className="flex items-center gap-1.5">
+                            <label htmlFor={'attendance-ot-' + worker.Id} className="sr-only">Overtime hours</label>
+                            <Input
+                              id={'attendance-ot-' + worker.Id}
+                              type="number"
+                              min="0"
+                              step="0.25"
+                              value={draft.overtimeHours ?? ''}
+                              onChange={(event) => {
+                                setDrafts((current) => ({ ...current, [String(worker.Id)]: { ...draft, overtimeHours: event.target.value } }));
+                                setDirty(true);
+                              }}
+                              placeholder="OT hrs"
+                              className="h-10 w-20 rounded-sm text-xs"
+                            />
+                          </div>
+                        </div>
+                        <div className="text-left sm:text-right">
+                          <p className="text-xs text-muted-foreground">Earned today</p>
+                          <p className="mt-1 font-heading text-lg font-semibold tabular-nums">{cash(earnings)}</p>
                         </div>
                       </div>
-                      <div className="text-left lg:text-right">
-                        <p className="text-xs text-muted-foreground">Earned today</p>
-                        <p className="mt-1 font-heading text-lg font-semibold tabular-nums">{draft.status === 'Unmarked' ? 'Pending' : cash(earnings)}</p>
-                      </div>
-                      <div className="lg:col-span-4">
-                        <label htmlFor={'attendance-notes-' + worker.Id} className="sr-only">Notes for {worker.Name}</label>
-                        <Input id={'attendance-notes-' + worker.Id} value={draft.notes ?? ''} onChange={(event) => {
-                          setDrafts((current) => ({ ...current, [String(worker.Id)]: { ...draft, notes: event.target.value } }));
-                          setDirty(true);
-                        }} placeholder="Optional attendance note" className="min-h-9 rounded-sm" />
+
+                      {/* Timings with clock picker & shift controls */}
+                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 pt-1 border-t border-border/50">
+                        <div className="flex items-center gap-1.5">
+                          <label htmlFor={'attendance-shift-' + worker.Id} className="text-xs text-muted-foreground w-12 shrink-0">Shift:</label>
+                          <select
+                            id={'attendance-shift-' + worker.Id}
+                            aria-label={`Shift for ${worker.Name}`}
+                            value={draft.shift || 'Day Shift'}
+                            onChange={(e) => {
+                              const newShift = e.target.value;
+                              const isNight = newShift === 'Night Shift';
+                              setDrafts((current) => ({
+                                ...current,
+                                [String(worker.Id)]: {
+                                  ...draft,
+                                  shift: newShift,
+                                  arrivalTime: isNight ? '21:00' : '09:00',
+                                  leavingTime: isNight ? '09:00' : '21:00',
+                                },
+                              }));
+                              setDirty(true);
+                            }}
+                            className="h-9 w-full rounded-sm border border-input bg-background px-2 text-xs font-medium"
+                          >
+                            <option value="Day Shift">Day Shift</option>
+                            <option value="Night Shift">Night Shift</option>
+                          </select>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <label htmlFor={'attendance-in-' + worker.Id} className="text-xs text-muted-foreground w-12 shrink-0">In:</label>
+                          <Input
+                            id={'attendance-in-' + worker.Id}
+                            type="time"
+                            value={draft.arrivalTime || '09:00'}
+                            onChange={(event) => {
+                              setDrafts((current) => ({
+                                ...current,
+                                [String(worker.Id)]: { ...draft, arrivalTime: event.target.value },
+                              }));
+                              setDirty(true);
+                            }}
+                            className="h-9 flex-1 rounded-sm text-xs cursor-pointer"
+                          />
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <label htmlFor={'attendance-out-' + worker.Id} className="text-xs text-muted-foreground w-12 shrink-0">Out:</label>
+                          <Input
+                            id={'attendance-out-' + worker.Id}
+                            type="time"
+                            value={draft.leavingTime || '21:00'}
+                            onChange={(event) => {
+                              setDrafts((current) => ({
+                                ...current,
+                                [String(worker.Id)]: { ...draft, leavingTime: event.target.value },
+                              }));
+                              setDirty(true);
+                            }}
+                            className="h-9 flex-1 rounded-sm text-xs cursor-pointer"
+                          />
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <label htmlFor={'attendance-notes-' + worker.Id} className="sr-only">Notes for {worker.Name}</label>
+                          <Input
+                            id={'attendance-notes-' + worker.Id}
+                            value={draft.notes ?? ''}
+                            onChange={(event) => {
+                              setDrafts((current) => ({ ...current, [String(worker.Id)]: { ...draft, notes: event.target.value } }));
+                              setDirty(true);
+                            }}
+                            placeholder="Optional note"
+                            className="h-9 w-full rounded-sm text-xs"
+                          />
+                        </div>
                       </div>
                     </div>
                   );
@@ -615,13 +873,37 @@ export default function AttendanceDaybook() {
             {historyLoading ? <div className="space-y-3 p-5"><Skeleton className="h-8 w-full" /><Skeleton className="h-8 w-full" /></div>
               : historyError ? <div className="p-5 text-sm text-destructive">{String(historyError?.message ?? historyError)} <Button size="sm" variant="outline" onClick={() => reloadHistory()}>Retry</Button></div>
                 : filteredHistory.length === 0 ? <div className="p-8 text-center"><p className="font-semibold">No attendance for this period</p><p className="mt-1 text-sm text-muted-foreground">Choose another period or switch back to the daybook.</p></div>
-                  : <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Worker</th><th className="px-4 py-3">Status</th><th className="px-4 py-3 text-right">OT (Hrs)</th><th className="px-4 py-3 text-right">Wage snapshot</th><th className="px-4 py-3 text-right">Earned</th><th className="px-4 py-3">Notes</th><th className="px-4 py-3">Action</th></tr></thead><tbody className="divide-y divide-border">{filteredHistory.map((row) => {
+                  : <div className="overflow-x-auto"><table className="w-full min-w-[880px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Worker</th><th className="px-4 py-3">Shift & Timings</th><th className="px-4 py-3">Status</th><th className="px-4 py-3 text-right">OT (Hrs)</th><th className="px-4 py-3 text-right">Wage snapshot</th><th className="px-4 py-3 text-right">Earned</th><th className="px-4 py-3">Notes</th><th className="px-4 py-3">Action</th></tr></thead><tbody className="divide-y divide-border">{filteredHistory.map((row) => {
                     const worker = workers.find((item) => String(item.Id) === lookupId(row.worker_c)) ?? { Id: lookupId(row.worker_c), Name: row.worker_c?.Name ?? 'Unknown worker' };
                     const otHrs = Number(row.overtimeHours_c || 0);
+                    const shift = row.shift_c || worker.shift_c || 'Day Shift';
+                    const shiftTiming = row.shiftTiming_c || worker.shiftTiming_c || (shift === 'Night Shift' ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM');
                     return <tr key={row.Id}>
                       <td className="whitespace-nowrap px-4 py-3">{toLocalDateLabel(row.attendanceDate_c)}</td>
                       <td className="px-4 py-3 font-medium">{worker.Name}</td>
-                      <td className="px-4 py-3">{row.status_c === 'Present' ? 'Full day' : row.status_c}</td>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <div className="flex flex-col gap-0.5">
+                          <span className={`inline-flex items-center w-fit rounded-sm px-1.5 py-0.5 text-[10px] font-semibold ${
+                            shift === 'Night Shift'
+                              ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                              : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                          }`}>
+                            {shift}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {shiftTiming}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-semibold ${
+                          row.status_c === 'Leave' || row.status_c === 'Absent'
+                            ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
+                            : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        }`}>
+                          {row.status_c === 'Leave' || row.status_c === 'Absent' ? 'Leave' : 'Present'}
+                        </span>
+                      </td>
                       <td className="px-4 py-3 text-right tabular-nums">
                         {otHrs > 0 ? (
                           <span className="inline-flex items-center rounded-sm bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">

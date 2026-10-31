@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
-const FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c'];
+const FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c', 'shift_c', 'shiftTiming_c'];
 
 export const route = { path: '/workers', layout: 'owner', access: 'authenticated' };
 export const nav = { icon: 'Users', label: 'Workers', section: 'People', order: 30 };
@@ -20,12 +20,13 @@ const PAGE_SIZE = 25;
 
 const cash = (value) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(value ?? 0));
 
-async function loadWorkers(search, status, type, page) {
+async function loadWorkers(search, status, type, shift, page) {
   let query = sdk.table('workers_c').select(FIELDS);
   if (search.trim()) query = query.where(contains('Name', search.trim()));
   if (status !== 'All') query = query.where(eq('status_c', status));
   query = query.where(or(eq('isArchived_c', false), isNull('isArchived_c')));
   if (type !== 'All') query = query.where(type === 'Regular' ? or(eq('workerType_c', type), isNull('workerType_c'), eq('workerType_c', '')) : eq('workerType_c', type));
+  if (shift !== 'All') query = query.where(shift === 'Day Shift' ? or(eq('shift_c', shift), isNull('shift_c'), eq('shift_c', '')) : eq('shift_c', shift));
   const response = await query.orderBy('Name').page(page, PAGE_SIZE).fetch();
   if (!response.success) throw new Error(response.message || 'Could not load workers.');
   return { rows: response.data, total: response.total, hasMore: response.hasMore };
@@ -37,9 +38,10 @@ export default function WorkersPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [typeFilter, setTypeFilter] = useState('All');
+  const [shiftFilter, setShiftFilter] = useState('All');
   const [page, setPage] = useState(1);
-  useEffect(() => { setPage(1); }, [search, statusFilter, typeFilter]);
-  const { data, loading, error, run } = useFetch(() => loadWorkers(search, statusFilter, typeFilter, page), [search, statusFilter, typeFilter, page]);
+  useEffect(() => { setPage(1); }, [search, statusFilter, typeFilter, shiftFilter]);
+  const { data, loading, error, run } = useFetch(() => loadWorkers(search, statusFilter, typeFilter, shiftFilter, page), [search, statusFilter, typeFilter, shiftFilter, page]);
   const workers = data?.rows ?? [];
   const [archiving, setArchiving] = useState(false);
 
@@ -82,11 +84,16 @@ export default function WorkersPage() {
         {access.canCreate && <Button asChild className="min-h-10 rounded-sm"><Link to="/workers/new"><ApperIcon name="Plus" size={16} /> Add worker</Link></Button>}
       </header>
 
-      <div className="grid gap-3 sm:grid-cols-[minmax(200px,1fr)_180px_180px]">
+      <div className="grid gap-3 sm:grid-cols-[minmax(200px,1fr)_160px_160px_160px]">
         <div className="relative">
           <ApperIcon name="Search" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search worker name…" className="min-h-10 rounded-sm pl-9" aria-label="Search workers" />
         </div>
+        <select value={shiftFilter} onChange={(event) => setShiftFilter(event.target.value)} aria-label="Filter by shift" className="min-h-10 rounded-sm border border-input bg-background px-3 text-sm">
+          <option value="All">All shifts</option>
+          <option value="Day Shift">Day Shift</option>
+          <option value="Night Shift">Night Shift</option>
+        </select>
         <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter by worker status" className="min-h-10 rounded-sm border border-input bg-background px-3 text-sm">
           <option value="All">All statuses</option>
           <option value="Active">Active</option>
@@ -104,10 +111,20 @@ export default function WorkersPage() {
         {loading && !data ? <div className="space-y-3 p-5"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div>
           : error ? <div className="p-6"><p className="font-medium">Workers could not be loaded.</p><p className="mt-1 text-sm text-muted-foreground">{String(error?.message ?? error)}</p><Button className="mt-3 rounded-sm" variant="outline" onClick={refresh}>Retry</Button></div>
             : workers.length === 0 ? <div className="p-10 text-center"><ApperIcon name="Users" size={28} className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">No workers found</p><p className="mt-1 text-sm text-muted-foreground">Add a worker or adjust your filters.</p>{access.canCreate && <Button asChild className="mt-4 rounded-sm"><Link to="/workers/new">Add worker</Link></Button>}</div>
-              : <div className="overflow-x-auto" aria-busy={loading}><table className="w-full min-w-[880px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Worker</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">Type</th><th className="px-4 py-3 text-right">Default daily wage</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Joined</th><th className="px-4 py-3">Actions</th></tr></thead><tbody className="divide-y divide-border">{workers.map((worker) => (
+              : <div className="overflow-x-auto" aria-busy={loading}><table className="w-full min-w-[920px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Worker</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">Shift & Timings</th><th className="px-4 py-3">Type</th><th className="px-4 py-3 text-right">Default daily wage</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Joined</th><th className="px-4 py-3">Actions</th></tr></thead><tbody className="divide-y divide-border">{workers.map((worker) => {
+                const shift = worker.shift_c || 'Day Shift';
+                const isNight = shift === 'Night Shift';
+                return (
                 <tr key={worker.Id} className="transition-colors hover:bg-muted/30">
                   <td className="px-4 py-3"><Link to={'/workers/' + worker.Id} className="font-semibold text-primary hover:underline">{worker.Name}</Link><p className="mt-1 text-xs text-muted-foreground">{worker.phone_c || 'No phone recorded'}</p></td>
                   <td className="px-4 py-3">{worker.role_c || '—'}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <span className={'inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-xs font-medium ' + (isNight ? 'border-indigo-500/20 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400' : 'border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400')}>
+                      <ApperIcon name={isNight ? 'Moon' : 'Sun'} size={12} />
+                      {shift}
+                    </span>
+                    <p className="mt-1 text-[11px] text-muted-foreground">{worker.shiftTiming_c || (isNight ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM')}</p>
+                  </td>
                   <td className="px-4 py-3">{worker.workerType_c || 'Regular'}</td>
                   <td className="px-4 py-3 text-right font-semibold tabular-nums">{worker.payType_c === 'Monthly Salary' ? cash(worker.monthlySalary_c) + ' / month' : cash(worker.dailyRate_c) + ' / day'}</td>
                   <td className="px-4 py-3"><span className={'inline-flex border px-2 py-1 text-xs ' + (worker.status_c === 'Active' ? 'border-success-border bg-success-muted text-success' : 'border-border bg-muted text-muted-foreground')}>{worker.status_c || 'Active'}</span></td>
@@ -122,7 +139,7 @@ export default function WorkersPage() {
                     </AlertDialog>
                   )}</div></td>
                 </tr>
-              ))}</tbody></table></div>}
+              );})}</tbody></table></div>}
       </section>
       {!error && <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">Page {page}</p><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={loading || page === 1} onClick={() => setPage((current) => current - 1)} className="rounded-sm active:scale-[0.98]">Previous</Button><Button variant="outline" disabled={loading || !data?.hasMore} onClick={() => setPage((current) => current + 1)} className="rounded-sm active:scale-[0.98]">Next</Button></div></div>}
       <p className="text-xs text-muted-foreground">Removed workers are hidden from this register, but their attendance, payments, and wage history stay linked.</p>

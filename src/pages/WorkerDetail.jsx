@@ -12,7 +12,7 @@ import PeriodControls from '@/components/PeriodControls';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 
-const WORKER_FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c'];
+const WORKER_FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c', 'shift_c', 'shiftTiming_c'];
 const ATTENDANCE_FIELDS = ['Name', 'worker_c', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'attendanceUnits_c', 'earnedWage_c', 'attendanceKey_c', 'notes_c'];
 const PAYMENT_FIELDS = ['Id', 'Name', 'worker_c', 'paymentDate_c', 'amount_c', 'paymentMethod_c', 'transactionType_c', 'notes_c', 'CreatedOn'];
 const PAYROLL_FIELDS = ['Name', 'worker_c', 'payPeriod_c', 'daysPresent_c', 'grossPay_c', 'advance_c', 'deductions_c', 'netPay_c', 'status_c', 'paidOn_c', 'notes_c'];
@@ -74,7 +74,17 @@ export default function WorkerDetailPage() {
     <div className="space-y-6">
       <Button asChild variant="ghost" size="sm" className="-ml-2 rounded-sm"><Link to="/workers"><ApperIcon name="ArrowLeft" size={16} /> Back to workers</Link></Button>
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
-        <div><p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">People / Wage statement</p><h1 className="font-heading text-3xl font-semibold">{worker.Name}</h1><p className="mt-2 text-sm text-muted-foreground">{worker.role_c || 'Worker'} · {worker.workerType_c || 'Regular'} · {worker.status_c || 'Active'} · {worker.payType_c === 'Monthly Salary' ? 'Monthly salary ' + cash(worker.monthlySalary_c) : 'Default rate ' + cash(worker.dailyRate_c) + '/day'}</p></div>
+        <div>
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">People / Wage statement</p>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="font-heading text-3xl font-semibold">{worker.Name}</h1>
+            <span className={'inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-xs font-semibold ' + (worker.shift_c === 'Night Shift' ? 'border-indigo-500/20 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400' : 'border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400')}>
+              <ApperIcon name={worker.shift_c === 'Night Shift' ? 'Moon' : 'Sun'} size={13} />
+              {worker.shift_c || 'Day Shift'} · {worker.shiftTiming_c || (worker.shift_c === 'Night Shift' ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM')}
+            </span>
+          </div>
+          <p className="mt-2 text-sm text-muted-foreground">{worker.role_c || 'Worker'} · {worker.workerType_c || 'Regular'} · {worker.status_c || 'Active'} · {worker.payType_c === 'Monthly Salary' ? 'Monthly salary ' + cash(worker.monthlySalary_c) : 'Default rate ' + cash(worker.dailyRate_c) + '/day'}</p>
+        </div>
         {access.canUpdate && <Button asChild variant="outline" className="rounded-sm"><Link to={'/workers/' + id + '/edit'}><ApperIcon name="Pencil" size={15} /> Edit worker</Link></Button>}
       </header>
 

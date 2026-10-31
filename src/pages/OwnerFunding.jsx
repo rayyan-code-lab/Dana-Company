@@ -12,7 +12,7 @@ import { formatInr, newIdempotencyKey } from '@/services/purchaseWorkflow';
 import { getOwnerFunding, recordOwnerFundingReimbursement } from '@/services/borrowingWorkflow';
 
 export const route = { path: '/owner-funding', layout: 'owner', access: "profile === 'Admin_c'" };
-export const nav = { icon: 'HandCoins', label: 'Owner funding', section: 'Finance', profiles: ['Admin_c'], order: 44 };
+export const nav = { icon: 'HandCoins', label: 'Owner funding', section: 'Finance', profiles: ['Admin_c'], order: 46 };
 
 const dateLabel = (value) => value ? formatLocalDate(value, DATE_FORMATS.SHORT) : '—';
 const amount = (value) => Number(value ?? 0);

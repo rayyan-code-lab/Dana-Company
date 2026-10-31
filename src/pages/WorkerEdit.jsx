@@ -12,16 +12,26 @@ import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
 import { todayLocalDate } from '@/services/periods';
 
-const FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c'];
+const FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c', 'shift_c', 'shiftTiming_c'];
 const ROLES = ['Operator', 'Machine Operator', 'Supervisor', 'Loader', 'Driver', 'Helper', 'Storekeeper', 'Other'];
 const PAY_TYPES = ['Daily Wage', 'Monthly Salary'];
+const SHIFTS = ['Day Shift', 'Night Shift'];
+const SHIFT_PRESETS = [
+  '09:00 AM - 09:00 PM',
+  '08:00 AM - 08:00 PM',
+  '09:00 PM - 09:00 AM',
+  '08:00 PM - 08:00 AM',
+];
 
 export const route = { path: '/workers/:id/edit', layout: 'owner', access: 'authenticated' };
 
 function buildForm(worker) {
+  const shift = worker?.shift_c ?? 'Day Shift';
   return {
     Name: worker?.Name ?? '',
     role_c: worker?.role_c ?? 'Helper',
+    shift_c: shift,
+    shiftTiming_c: worker?.shiftTiming_c ?? (shift === 'Night Shift' ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM'),
     phone_c: worker?.phone_c ?? '',
     dailyRate_c: String(worker?.dailyRate_c ?? ''),
     status_c: worker?.status_c ?? 'Active',
@@ -70,6 +80,8 @@ export default function WorkerEditPage({ create = false }) {
       const payload = {
         Name: form.Name.trim(),
         role_c: form.role_c,
+        shift_c: form.shift_c || 'Day Shift',
+        shiftTiming_c: String(form.shiftTiming_c || (form.shift_c === 'Night Shift' ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM')).trim(),
         phone_c: form.phone_c.trim(),
         dailyRate_c: wage,
         status_c: form.status_c,
@@ -115,6 +127,51 @@ export default function WorkerEditPage({ create = false }) {
           <Field label="Pay type *" id="edit-worker-pay-type"><select id="edit-worker-pay-type" value={form.payType_c ?? 'Daily Wage'} onChange={(event) => setField('payType_c', event.target.value)} required className="min-h-10 w-full rounded-sm border border-input bg-background px-3 text-sm">{PAY_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></Field>
           {form.payType_c === 'Monthly Salary' && <Field label="Monthly salary (₹) *" id="edit-worker-salary"><Input id="edit-worker-salary" type="number" min="0.01" step="0.01" value={form.monthlySalary_c ?? ''} onChange={(event) => setField('monthlySalary_c', event.target.value)} required placeholder="0.00" className="min-h-10 rounded-sm" /><p className="mt-1 text-xs text-muted-foreground">Attendance is valued at monthly salary ÷ 30 per day.</p></Field>}
           <Field label="Worker type *" id="edit-worker-type"><select id="edit-worker-type" value={form.workerType_c ?? 'Regular'} onChange={(event) => setField('workerType_c', event.target.value)} required className="min-h-10 w-full rounded-sm border border-input bg-background px-3 text-sm"><option value="Regular">Regular</option><option value="Temporary">Temporary</option></select></Field>
+          <Field label="Assigned shift *" id="edit-worker-shift">
+            <select
+              id="edit-worker-shift"
+              value={form.shift_c ?? 'Day Shift'}
+              onChange={(event) => {
+                const newShift = event.target.value;
+                setForm((current) => ({
+                  ...current,
+                  shift_c: newShift,
+                  shiftTiming_c: newShift === 'Night Shift' && current.shiftTiming_c === '09:00 AM - 09:00 PM'
+                    ? '09:00 PM - 09:00 AM'
+                    : current.shiftTiming_c,
+                }));
+              }}
+              required
+              className="min-h-10 w-full rounded-sm border border-input bg-background px-3 text-sm"
+            >
+              {SHIFTS.map((shift) => <option key={shift} value={shift}>{shift}</option>)}
+            </select>
+          </Field>
+          <div className="sm:col-span-2">
+            <Field label="Shift timings *" id="edit-worker-timings">
+              <Input
+                id="edit-worker-timings"
+                value={form.shiftTiming_c ?? ''}
+                onChange={(event) => setField('shiftTiming_c', event.target.value)}
+                required
+                placeholder="e.g. 09:00 AM - 09:00 PM"
+                className="min-h-10 rounded-sm"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-medium text-muted-foreground">Quick presets:</span>
+                {SHIFT_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setField('shiftTiming_c', preset)}
+                    className="rounded-sm border border-border bg-muted/50 px-2 py-0.5 text-xs text-foreground transition-colors hover:bg-muted"
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </Field>
+          </div>
           <Field label="Status *" id="edit-worker-status"><select id="edit-worker-status" value={form.status_c ?? 'Active'} onChange={(event) => setField('status_c', event.target.value)} required className="min-h-10 w-full rounded-sm border border-input bg-background px-3 text-sm"><option value="Active">Active</option><option value="Inactive">Inactive</option></select></Field>
           <Field label="Joining date *" id="edit-worker-joined"><Input id="edit-worker-joined" type="date" value={form.joinedOn_c ?? ''} onChange={(event) => setField('joinedOn_c', event.target.value)} required className="min-h-10 rounded-sm" /></Field>
           <div className="sm:col-span-2"><label htmlFor="edit-worker-notes" className="mb-1.5 block text-sm font-medium">Notes</label><Textarea id="edit-worker-notes" value={form.notes_c ?? ''} onChange={(event) => setField('notes_c', event.target.value)} placeholder="Optional worker notes" rows={3} /></div>
