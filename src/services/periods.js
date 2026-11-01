@@ -34,7 +34,10 @@ export function getPeriodRange(type, anchorDate) {
   let start = new Date(anchor);
   let endExclusive = new Date(anchor);
 
-  if (type === 'month') {
+  if (type === 'year') {
+    start = new Date(anchor.getFullYear(), 0, 1, 12);
+    endExclusive = new Date(anchor.getFullYear() + 1, 0, 1, 12);
+  } else if (type === 'month') {
     start = new Date(anchor.getFullYear(), anchor.getMonth(), 1, 12);
     endExclusive = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1, 12);
   } else if (type === 'week') {
@@ -53,7 +56,9 @@ export function getPeriodRange(type, anchorDate) {
   const startISO = toISODate(start);
   const endISO = toISODate(end);
   let label = '';
-  if (type === 'month') {
+  if (type === 'year') {
+    label = `Financial Year ${start.getFullYear()} (${displayDate(startISO, false)} – ${displayDate(endISO, true)})`;
+  } else if (type === 'month') {
     label = start.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
   } else if (type === 'week') {
     label = displayDate(startISO, false) + ' – ' + displayDate(endISO, true);
@@ -66,6 +71,9 @@ export function getPeriodRange(type, anchorDate) {
 
 export function shiftPeriod(anchorDate, type, amount) {
   const anchor = parseLocalDate(anchorDate);
+  if (type === 'year') {
+    return toISODate(new Date(anchor.getFullYear() + amount, 0, 1, 12));
+  }
   if (type === 'month') {
     return toISODate(new Date(anchor.getFullYear(), anchor.getMonth() + amount, 1, 12));
   }

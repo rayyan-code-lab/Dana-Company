@@ -1,12 +1,9 @@
-import React, { useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useFetch } from '@/hooks/useFetch';
 import { sdk } from '@/services/sdk';
-import { todayLocalDate, getPeriodRange } from '@/services/periods';
+import { todayLocalDate } from '@/services/periods';
 import { getProducedStockBalances } from '@/services/productionWorkflow';
 import ApperIcon from '@/components/ApperIcon';
-import PeriodControls from '@/components/PeriodControls';
-import FinancialReportPdfModal from '@/components/FinancialReportPdfModal';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -20,7 +17,7 @@ const read = async (table, fields) => {
 
   while (more) {
     const response = await sdk.table(table).select(fields).page(page, 100).fetch();
-    if (!response.success) throw new Error(response.message || 'Could not load ' + table);
+    if (!response.success) throw new Error(response.message || 'Could not load overview');
     rows.push(...(response.data ?? []));
     more = Boolean(response.hasMore);
     page += 1;
@@ -29,16 +26,25 @@ const read = async (table, fields) => {
   return rows;
 };
 
-const cash = (value) =>
-  new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    maximumFractionDigits: 0,
-  }).format(Number(value ?? 0));
+const inr = (value) => new Intl.NumberFormat('en-IN', {
+  style: 'currency',
+  currency: 'INR',
+  maximumFractionDigits: 0,
+}).format(Number(value ?? 0));
 
 const kg = (value) => `${Number(value ?? 0).toLocaleString('en-IN')} kg`;
 
-function Metric({ label, value, note, icon, color = 'text-primary' }) {
+function toLocalDateLabel(value) {
+  if (!value) return '—';
+  const parts = String(value).split('-').map(Number);
+  return new Date(parts[0], (parts[1] || 1) - 1, parts[2] || 1, 12).toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function Metric({ label, value, note, icon }) {
   return (
     <div className="border border-border bg-card p-5 shadow-sm">
       <div className="flex items-center justify-between">
@@ -47,130 +53,53 @@ function Metric({ label, value, note, icon, color = 'text-primary' }) {
           <ApperIcon name={icon} size={18} />
         </span>
       </div>
-      <p className={`mt-4 font-heading text-2xl font-semibold tabular-nums sm:text-3xl ${color}`}>{value}</p>
-      {note && <p className="mt-1 text-xs text-muted-foreground">{note}</p>}
+      <p className="mt-4 font-heading text-3xl font-semibold tabular-nums">{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{note}</p>
     </div>
   );
 }
 
 export default function Home() {
-  const [periodType, setPeriodType] = useState('month');
-  const [anchorDate, setAnchorDate] = useState(todayLocalDate());
-  const [reportModalOpen, setReportModalOpen] = useState(false);
-
-  const range = getPeriodRange(periodType, anchorDate);
-
-  // Fetch all financial dimensions
-  const salesRecords = useFetch(
-    () => read('sales_c', ['Name', 'saleId_c', 'amount_c', 'paidAmount_c', 'balanceDue_c', 'saleDate_c', 'weightKg_c']),
-    []
-  );
-  const expenseRecords = useFetch(
-    () => read('expenses_c', ['Name', 'amount_c', 'expenseDate_c']),
-    []
-  );
-  const purchases = useFetch(
-    () => read('purchases_c', ['Name', 'totalPurchaseValue_c', 'recordStatus_c', 'purchaseDate_c']),
-    []
-  );
-  const otherIncome = useFetch(
-    () => read('transactions_c', ['Name', 'entryType_c', 'amount_c', 'entryDate_c']),
-    []
-  );
-  const wastageRecords = useFetch(
-    () => read('wastage_c', ['Name', 'recordType_c', 'date_c', 'category_c', 'weightKg_c', 'revenueAmount_c']),
-    []
-  );
-  const attendanceRecords = useFetch(
-    () => read('attendance_c', ['Name', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'earnedWage_c', 'attendanceUnits_c']),
-    []
-  );
+  const salesRecords = useFetch(() => read('sales_c', ['Name', 'saleId_c', 'amount_c', 'saleDate_c']), []);
+  const expenseRecords = useFetch(() => read('expenses_c', ['Name', 'amount_c', 'expenseDate_c']), []);
+  const purchases = useFetch(() => read('purchases_c', [
+    'Name',
+    'totalPurchaseValue_c',
+    'recordStatus_c',
+    'purchaseDate_c',
+  ]), []);
+  const otherIncome = useFetch(() => read('transactions_c', ['Name', 'entryType_c', 'amount_c', 'entryDate_c']), []);
   const producedStock = useFetch(() => getProducedStockBalances(), []);
+  const workers = useFetch(() => read('workers_c', ['Name', 'status_c', 'role_c', 'shift_c']), []);
+  const attendance = useFetch(() => read('attendance_c', ['Name', 'worker_c', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'earnedWage_c']), []);
 
-  const allReads = [salesRecords, expenseRecords, purchases, otherIncome, wastageRecords, attendanceRecords];
+  const allReads = [salesRecords, expenseRecords, purchases, otherIncome, workers, attendance];
   const busy = allReads.some((item) => item.data === undefined);
   const today = todayLocalDate();
 
-  // Helper date filter
-  const isInPeriod = (d) => {
-    if (!d) return false;
-    return d >= range.start && d <= range.end;
-  };
+  const salesTotal = (salesRecords.data ?? []).reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
+  const incomeTotal = (otherIncome.data ?? [])
+    .filter((row) => row.entryType_c === 'Other Income')
+    .reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
+  const salesAndIncome = salesTotal + incomeTotal;
+  const expensesTotal = (expenseRecords.data ?? []).reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
+  const purchasesTotal = (purchases.data ?? [])
+    .filter((row) => row.recordStatus_c !== 'Cancelled')
+    .reduce((sum, row) => sum + Number(row.totalPurchaseValue_c ?? 0), 0);
+  const legacyPurchaseTotal = (otherIncome.data ?? [])
+    .filter((row) => row.entryType_c === 'Purchase')
+    .reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
+  const spending = expensesTotal + purchasesTotal + legacyPurchaseTotal;
 
-  // Period-specific financials
-  const periodFinancials = useMemo(() => {
-    const rawSales = salesRecords.data ?? [];
-    const rawExpenses = expenseRecords.data ?? [];
-    const rawPurchases = purchases.data ?? [];
-    const rawTransactions = otherIncome.data ?? [];
-    const rawWastage = wastageRecords.data ?? [];
-    const rawAttendance = attendanceRecords.data ?? [];
+  // Attendance statistics for today
+  const todayAttendance = (attendance.data ?? []).filter((row) => row.attendanceDate_c === today);
+  const activeWorkers = (workers.data ?? []).filter((worker) => worker.status_c === 'Active');
+  const activeWorkerCount = activeWorkers.length;
+  const presentCount = todayAttendance.filter((row) => row.status_c === 'Present' || row.status_c === 'Full Day').length;
+  const leaveCount = todayAttendance.filter((row) => row.status_c === 'Leave').length;
+  const absentCount = todayAttendance.filter((row) => row.status_c === 'Absent').length;
+  const unmarkedCount = Math.max(0, activeWorkerCount - presentCount - leaveCount - absentCount);
 
-    const periodSales = rawSales.filter((r) => isInPeriod(r.saleDate_c));
-    const periodExpenses = rawExpenses.filter((r) => isInPeriod(r.expenseDate_c));
-    const periodPurchases = rawPurchases.filter((r) => r.recordStatus_c !== 'Cancelled' && isInPeriod(r.purchaseDate_c));
-    const periodWastageSales = rawWastage.filter((r) => r.recordType_c === 'Sold' && isInPeriod(r.date_c));
-    const periodAttendance = rawAttendance.filter((r) => isInPeriod(r.attendanceDate_c));
-    const periodOtherIncome = rawTransactions.filter((r) => r.entryType_c === 'Other Income' && isInPeriod(r.entryDate_c));
-
-    // Revenue
-    const salesTotal = periodSales.reduce((s, r) => s + Number(r.amount_c ?? 0), 0);
-    const salesPaidTotal = periodSales.reduce((s, r) => s + (r.paidAmount_c != null ? Number(r.paidAmount_c) : Number(r.amount_c ?? 0)), 0);
-    const salesPendingTotal = periodSales.reduce((s, r) => s + (r.balanceDue_c != null ? Number(r.balanceDue_c) : Math.max(0, Number(r.amount_c ?? 0) - Number(r.paidAmount_c ?? r.amount_c ?? 0))), 0);
-    const scrapRevenueTotal = periodWastageSales.reduce((s, r) => s + Number(r.revenueAmount_c ?? 0), 0);
-    const otherIncomeTotal = periodOtherIncome.reduce((s, r) => s + Number(r.amount_c ?? 0), 0);
-    const totalRevenue = salesTotal + scrapRevenueTotal + otherIncomeTotal;
-
-    // Costs
-    const purchasesTotal = periodPurchases.reduce((s, r) => s + Number(r.totalPurchaseValue_c ?? 0), 0);
-    const expensesTotal = periodExpenses.reduce((s, r) => s + Number(r.amount_c ?? 0), 0);
-    const payrollTotal = periodAttendance.reduce((s, r) => {
-      if (r.status_c === 'Unmarked') return s;
-      return s + (r.earnedWage_c != null ? Number(r.earnedWage_c) : Number(r.wagePerDay_c || 0) * Number(r.attendanceUnits_c || 1));
-    }, 0);
-    const totalCosts = purchasesTotal + expensesTotal + payrollTotal;
-
-    // Net Profit & Margin
-    const netProfit = totalRevenue - totalCosts;
-    const netMarginPercent = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
-
-    // Physical stock & scrap assets
-    let totalScrapGen = 0;
-    let totalScrapSold = 0;
-    rawWastage.forEach((w) => {
-      const wt = Number(w.weightKg_c || 0);
-      if (w.recordType_c === 'Sold') totalScrapSold += wt;
-      else totalScrapGen += wt;
-    });
-    const scrapInStorageKg = Math.max(0, totalScrapGen - totalScrapSold);
-
-    const stockOnHandKg = (producedStock.data ?? []).reduce((s, p) => s + Number(p.balance || 0), 0);
-    const totalProducedKg = (producedStock.data ?? []).reduce((s, p) => s + Number(p.produced || 0), 0);
-
-    return {
-      salesTotal,
-      salesPaidTotal,
-      salesPendingTotal,
-      scrapRevenueTotal,
-      otherIncomeTotal,
-      totalRevenue,
-      purchasesTotal,
-      expensesTotal,
-      payrollTotal,
-      totalCosts,
-      netProfit,
-      netMarginPercent,
-      scrapInStorageKg,
-      stockOnHandKg,
-      totalProducedKg,
-      salesCount: periodSales.length,
-      expensesCount: periodExpenses.length,
-      purchasesCount: periodPurchases.length,
-      payrollEntriesCount: periodAttendance.length,
-    };
-  }, [salesRecords.data, expenseRecords.data, purchases.data, otherIncome.data, wastageRecords.data, attendanceRecords.data, producedStock.data, range]);
-
-  // Year monthly stats
   const currentYear = Number(today.slice(0, 4));
   const monthlyStats = Array.from({ length: 12 }, (_, index) => {
     const monthKey = `${currentYear}-${String(index + 1).padStart(2, '0')}`;
@@ -189,225 +118,146 @@ export default function Home() {
       income: (otherIncome.data ?? [])
         .filter((row) => row.entryType_c === 'Other Income' && inMonth(row.entryDate_c))
         .reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0),
-      scrapRevenue: (wastageRecords.data ?? [])
-        .filter((row) => row.recordType_c === 'Sold' && inMonth(row.date_c))
-        .reduce((sum, row) => sum + Number(row.revenueAmount_c ?? 0), 0),
-      expenses: (expenseRecords.data ?? [])
-        .filter((row) => inMonth(row.expenseDate_c))
-        .reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0),
-      payroll: (attendanceRecords.data ?? [])
-        .filter((row) => inMonth(row.attendanceDate_c) && row.status_c !== 'Unmarked')
-        .reduce((sum, row) => sum + Number(row.earnedWage_c ?? row.wagePerDay_c ?? 0), 0),
     };
   });
-
   const monthlyTotals = monthlyStats.reduce(
     (totals, month) => ({
       purchases: totals.purchases + month.purchases,
       sales: totals.sales + month.sales,
-      income: totals.income + month.income + month.scrapRevenue,
-      expenses: totals.expenses + month.expenses,
-      payroll: totals.payroll + month.payroll,
+      income: totals.income + month.income,
     }),
-    { purchases: 0, sales: 0, income: 0, expenses: 0, payroll: 0 }
+    { purchases: 0, sales: 0, income: 0 },
   );
 
   const actions = [
-    ['UserRoundPlus', 'Add worker', 'Worker profiles, shift assignments & timings', '/workers/new'],
-    ['CalendarCheck', 'Mark attendance', 'Day & night shifts with individual labor timings', '/attendance'],
-    ['TrendingUp', 'Record sale', 'Quantity, pricing, invoice & payment division', '/sales/new'],
-    ['ReceiptIndianRupee', 'Log expense', 'Operating costs, receipt attachments & edits', '/expenses/new'],
-    ['Recycle', 'Manage wastage', 'Categorized scrap stock & monetization revenue', '/wastage'],
-    ['Factory', 'Track production', 'Foundry heats, batch casting & finished stock', '/production'],
+    ['UserRoundPlus', 'Add worker', 'Worker details, roles and daily rates', '/workers/new'],
+    ['CalendarCheck', 'Mark attendance', 'Daily attendance, shifts and timings', '/attendance'],
+    ['TrendingUp', 'Record sale', 'Quantity, rate and customer invoice', '/sales/new'],
+    ['ReceiptIndianRupee', 'Log expense', 'Amount, payment method and receipt evidence', '/expenses/new'],
+    ['FileSpreadsheet', 'Financial Reports', 'Detailed profit & loss, yearly trends & statement export', '/financial-reports'],
   ];
-
-  const isProfitable = periodFinancials.netProfit >= 0;
 
   return (
     <div className="space-y-7">
-      {/* Top Header */}
       <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
         <div>
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">
-            DANA COMPANY · {new Date(today + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}
+            Company overview · {new Date(today + 'T12:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}
           </p>
-          <h1 className="font-heading text-3xl font-semibold md:text-4xl">Financial &amp; Operations Dashboard</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Complete executive overview of sales, scrap revenue, raw purchases, payroll, operating expenses, and profit/loss.
-          </p>
+          <h1 className="font-heading text-3xl font-semibold md:text-4xl">Company dashboard</h1>
+          <p className="mt-2 text-sm text-muted-foreground">Your raw material, production, people and company money in one operations workspace.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            className="gap-2 rounded-sm bg-primary text-primary-foreground shadow-sm"
-            onClick={() => setReportModalOpen(true)}
-          >
-            <ApperIcon name="FileSpreadsheet" size={16} />
-            Export Financial Report (PDF)
-          </Button>
           <Button asChild variant="outline" className="rounded-sm">
+            <Link to="/expenses/new">Log expense</Link>
+          </Button>
+          <Button asChild className="rounded-sm">
             <Link to="/sales/new"><ApperIcon name="Plus" size={16} /> Record sale</Link>
           </Button>
         </div>
       </div>
 
-      {/* Period Filter for Dashboard Financials */}
-      <div className="rounded-sm border border-border bg-card p-4 shadow-sm">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Financial Statement Period</p>
-            <p className="font-semibold text-sm text-foreground">{range.label}</p>
-          </div>
-          <PeriodControls
-            type={periodType}
-            onTypeChange={setPeriodType}
-            anchorDate={anchorDate}
-            onAnchorDateChange={setAnchorDate}
-          />
+      {busy ? (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Skeleton className="h-36" />
+          <Skeleton className="h-36" />
+          <Skeleton className="h-44" />
+          <Skeleton className="h-44" />
         </div>
-      </div>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {/* Left Column: Total Purchases + Section below it for Workers Present */}
+          <div className="space-y-4">
+            <Metric label="Total purchases" value={inr(purchasesTotal)} note="Excluding cancelled purchases" icon="ShoppingCart" />
 
-      {/* Executive Profit & Loss Card */}
-      <section className="overflow-hidden rounded-sm border-2 border-border bg-card shadow-md">
-        <div className="border-b border-border bg-muted/40 px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded bg-primary/10 text-primary">
-              <ApperIcon name="Scale" size={16} />
-            </span>
-            <h2 className="font-heading text-lg font-bold">Profit &amp; Loss Statement ({range.label})</h2>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setReportModalOpen(true)}
-            className="text-xs text-primary hover:text-primary gap-1"
-          >
-            <ApperIcon name="Printer" size={14} />
-            View / Print Official Statement
-          </Button>
-        </div>
-
-        <div className="grid divide-y divide-border sm:grid-cols-3 sm:divide-y-0 sm:divide-x">
-          {/* Revenue */}
-          <div className="p-5">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Gross Revenue</p>
-            <p className="mt-2 font-heading text-3xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
-              {busy ? <Skeleton className="h-9 w-36" /> : cash(periodFinancials.totalRevenue)}
-            </p>
-            <div className="mt-3 space-y-1 text-xs text-muted-foreground border-t border-border pt-2.5">
-              <div className="flex justify-between">
-                <span>Finished Sales:</span>
-                <span className="font-medium text-foreground">{cash(periodFinancials.salesTotal)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Scrap Monetization:</span>
-                <span className="font-medium text-foreground">{cash(periodFinancials.scrapRevenueTotal)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Other Income:</span>
-                <span className="font-medium text-foreground">{cash(periodFinancials.otherIncomeTotal)}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Costs */}
-          <div className="p-5">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Operating Expenditures</p>
-            <p className="mt-2 font-heading text-3xl font-bold tabular-nums text-slate-800 dark:text-slate-100">
-              {busy ? <Skeleton className="h-9 w-36" /> : cash(periodFinancials.totalCosts)}
-            </p>
-            <div className="mt-3 space-y-1 text-xs text-muted-foreground border-t border-border pt-2.5">
-              <div className="flex justify-between">
-                <span>Raw Material Purchases:</span>
-                <span className="font-medium text-foreground">{cash(periodFinancials.purchasesTotal)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Factory Expenses:</span>
-                <span className="font-medium text-foreground">{cash(periodFinancials.expensesTotal)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Labor Payroll:</span>
-                <span className="font-medium text-foreground">{cash(periodFinancials.payrollTotal)}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Bottom-Line Net Profit / Loss */}
-          <div className={`p-5 ${isProfitable ? 'bg-emerald-500/5' : 'bg-rose-500/5'}`}>
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Net Operating {isProfitable ? 'Profit' : 'Loss'}
-              </p>
-              <span
-                className={`inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-bold uppercase tracking-wider ${
-                  isProfitable ? 'bg-emerald-500/10 text-emerald-600' : 'bg-rose-500/10 text-rose-600'
-                }`}
-              >
-                {isProfitable ? 'Profitable' : 'Deficit'}
-              </span>
-            </div>
-            <p
-              className={`mt-2 font-heading text-3xl font-bold tabular-nums ${
-                isProfitable ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
-              }`}
-            >
-              {busy ? <Skeleton className="h-9 w-36" /> : cash(periodFinancials.netProfit)}
-            </p>
-            <div className="mt-3 space-y-1 text-xs text-muted-foreground border-t border-border pt-2.5">
-              <div className="flex justify-between">
-                <span>Operating Profit Margin:</span>
-                <span className="font-bold text-foreground">
-                  {periodFinancials.totalRevenue > 0 ? `${periodFinancials.netMarginPercent.toFixed(1)}%` : '—'}
+            {/* Section below Total Purchases showing workers present */}
+            <section className="border border-border bg-card p-5 shadow-sm">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Daily workforce attendance</p>
+                  <h2 className="mt-1 font-heading text-lg font-semibold">Workers present today</h2>
+                </div>
+                <span className="flex size-9 items-center justify-center rounded-sm bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  <ApperIcon name="Users" size={18} />
                 </span>
               </div>
-              <div className="flex justify-between">
-                <span>Pending Customer Receivables:</span>
-                <span className="font-medium text-amber-600 dark:text-amber-400">{cash(periodFinancials.salesPendingTotal)}</span>
+
+              <div className="mt-4 flex items-baseline gap-2">
+                <p className="font-heading text-3xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {presentCount}
+                </p>
+                <span className="text-sm font-medium text-muted-foreground">
+                  / {activeWorkerCount} active workers
+                </span>
               </div>
-            </div>
+
+              <div className="mt-4 flex flex-wrap gap-1.5 border-t border-border pt-3 text-xs">
+                <span className="inline-flex items-center rounded-sm bg-emerald-500/10 px-2 py-0.5 font-medium text-emerald-600 dark:text-emerald-400">
+                  <ApperIcon name="Check" size={12} className="mr-1" /> {presentCount} Present
+                </span>
+                <span className="inline-flex items-center rounded-sm bg-amber-500/10 px-2 py-0.5 font-medium text-amber-600 dark:text-amber-400">
+                  <ApperIcon name="Calendar" size={12} className="mr-1" /> {leaveCount} Leave
+                </span>
+                <span className="inline-flex items-center rounded-sm bg-rose-500/10 px-2 py-0.5 font-medium text-rose-600 dark:text-rose-400">
+                  <ApperIcon name="X" size={12} className="mr-1" /> {absentCount} Absent
+                </span>
+                {unmarkedCount > 0 && (
+                  <span className="inline-flex items-center rounded-sm bg-muted px-2 py-0.5 font-medium text-muted-foreground">
+                    {unmarkedCount} Unmarked
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-4 border-t border-border pt-3 flex justify-between items-center text-xs">
+                <span className="text-muted-foreground">Date: {toLocalDateLabel(today)}</span>
+                <Button asChild size="sm" variant="ghost" className="h-7 text-xs font-semibold text-primary p-0 hover:bg-transparent">
+                  <Link to="/attendance">
+                    Open daybook <ApperIcon name="ArrowRight" size={12} className="ml-1" />
+                  </Link>
+                </Button>
+              </div>
+            </section>
+          </div>
+
+          {/* Right Column: Sales & Income + Quick Entry */}
+          <div className="space-y-4">
+            <Metric label="Sales & income" value={inr(salesAndIncome)} note="Sales register plus other income" icon="TrendingUp" />
+
+            <section className="border border-border bg-card p-5 shadow-sm">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-highlight">Quick operations</p>
+              <h2 className="mt-1 font-heading text-lg font-semibold">Fast data entry</h2>
+              <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                <Button asChild variant="outline" size="sm" className="w-full rounded-sm justify-start">
+                  <Link to="/attendance"><ApperIcon name="CalendarCheck" size={14} className="mr-1.5" /> Daybook</Link>
+                </Button>
+                <Button asChild variant="outline" size="sm" className="w-full rounded-sm justify-start">
+                  <Link to="/sales/new"><ApperIcon name="TrendingUp" size={14} className="mr-1.5" /> Record sale</Link>
+                </Button>
+                <Button asChild variant="outline" size="sm" className="w-full rounded-sm justify-start">
+                  <Link to="/expenses/new"><ApperIcon name="ReceiptIndianRupee" size={14} className="mr-1.5" /> Log expense</Link>
+                </Button>
+                <Button asChild variant="outline" size="sm" className="w-full rounded-sm justify-start">
+                  <Link to="/financial-reports"><ApperIcon name="FileSpreadsheet" size={14} className="mr-1.5" /> P&amp;L Report</Link>
+                </Button>
+              </div>
+              <div className="mt-4 border-t border-border pt-3 flex justify-between items-center text-xs text-muted-foreground">
+                <span>Recorded flow overview</span>
+                <Link to="/financial-reports" className="font-semibold text-primary hover:underline inline-flex items-center gap-1">
+                  Financial reports <ApperIcon name="ArrowRight" size={12} />
+                </Link>
+              </div>
+            </section>
           </div>
         </div>
-      </section>
+      )}
 
-      {/* Grid of Key Financial Metric Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric
-          label="Sales Revenue"
-          value={cash(periodFinancials.salesTotal)}
-          note={`${periodFinancials.salesCount} sale records · ${cash(periodFinancials.salesPaidTotal)} paid`}
-          icon="TrendingUp"
-          color="text-emerald-600 dark:text-emerald-400"
-        />
-        <Metric
-          label="Scrap Revenue"
-          value={cash(periodFinancials.scrapRevenueTotal)}
-          note={`Industrial waste sold · ${kg(periodFinancials.scrapInStorageKg)} scrap in storage`}
-          icon="Recycle"
-          color="text-emerald-600 dark:text-emerald-400"
-        />
-        <Metric
-          label="Raw Material Purchases"
-          value={cash(periodFinancials.purchasesTotal)}
-          note={`${periodFinancials.purchasesCount} purchase orders recorded`}
-          icon="ShoppingCart"
-        />
-        <Metric
-          label="Payroll & Wages"
-          value={cash(periodFinancials.payrollTotal)}
-          note={`${periodFinancials.payrollEntriesCount} marked attendance records in period`}
-          icon="WalletCards"
-        />
-      </div>
-
-      {/* Production & Finished Inventory Stock Table */}
       <section className="overflow-hidden border border-border bg-card shadow-sm">
         <div className="flex flex-col gap-1 border-b border-border px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">In-Hand Production &amp; Stock</p>
-            <h2 className="mt-1 font-heading text-xl font-semibold">Finished product on hand</h2>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">In-Hand Production/Stock</p>
+            <h2 className="mt-2 font-heading text-xl font-semibold">Finished product on hand</h2>
           </div>
-          <span className="text-xs text-muted-foreground">Cumulative produced minus sales, by product</span>
+          <span className="text-xs text-muted-foreground">Produced minus sold, by product</span>
         </div>
         {producedStock.data === undefined && !producedStock.error ? (
           <div className="space-y-3 p-5">
@@ -426,18 +276,16 @@ export default function Home() {
                   <th className="px-5 py-3 font-semibold">Product</th>
                   <th className="px-5 py-3 text-right font-semibold">Produced</th>
                   <th className="px-5 py-3 text-right font-semibold">Sold</th>
-                  <th className="px-5 py-3 text-right font-semibold">Available in Stock</th>
+                  <th className="px-5 py-3 text-right font-semibold">Available</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {producedStock.data.map((item) => (
                   <tr key={item.key} className="hover:bg-muted/40">
-                    <td className="whitespace-nowrap px-5 py-3 font-medium">{item.name}</td>
+                    <td className="whitespace-nowrap px-5 py-3">{item.name}</td>
                     <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{kg(item.produced)}</td>
                     <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{kg(item.sold)}</td>
-                    <td className="whitespace-nowrap px-5 py-3 text-right font-bold tabular-nums text-foreground">
-                      {kg(item.balance)}
-                    </td>
+                    <td className="whitespace-nowrap px-5 py-3 text-right font-semibold tabular-nums">{kg(item.balance)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -446,14 +294,38 @@ export default function Home() {
         )}
       </section>
 
-      {/* Monthly Financial Performance Table */}
+      <section className="border border-border bg-card p-5 shadow-sm">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-highlight">Finance snapshot</p>
+        <h2 className="mt-2 font-heading text-xl font-semibold">Recorded money flow</h2>
+        <div className="mt-6 space-y-5">
+          <FinanceBar label="Sales & other income" value={salesAndIncome} max={salesAndIncome + spending} />
+          <FinanceBar label="Expenses & purchases (including legacy)" value={spending} max={salesAndIncome + spending} />
+          <div className="border-t border-border pt-4">
+            <p className="text-xs text-muted-foreground">Difference on recorded entries</p>
+            <p className="mt-1 font-heading text-2xl font-semibold">{inr(salesAndIncome - spending)}</p>
+          </div>
+        </div>
+        <div className="mt-5 grid grid-cols-2 gap-2">
+          <Button asChild variant="outline" className="w-full rounded-sm"><Link to="/sales">View sales</Link></Button>
+          <Button asChild variant="outline" className="w-full rounded-sm"><Link to="/expenses">View expenses</Link></Button>
+          <Button asChild variant="outline" className="w-full rounded-sm"><Link to="/purchases">View purchases</Link></Button>
+          <Button asChild variant="outline" className="w-full rounded-sm"><Link to="/payroll">View wages</Link></Button>
+          <Button asChild className="col-span-2 w-full rounded-sm bg-primary/10 text-primary hover:bg-primary/20 border border-primary/20">
+            <Link to="/financial-reports">
+              <ApperIcon name="FileSpreadsheet" size={15} className="mr-1.5" />
+              View Comprehensive Financial Reports &amp; P&amp;L
+            </Link>
+          </Button>
+        </div>
+      </section>
+
       <section className="overflow-hidden border border-border bg-card shadow-sm">
         <div className="flex flex-col gap-1 border-b border-border px-5 py-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Monthly financial trends</p>
-            <h2 className="mt-1 font-heading text-xl font-semibold">Full financial dimensions by month ({currentYear})</h2>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Monthly statistics</p>
+            <h2 className="mt-2 font-heading text-xl font-semibold">Purchases, sales and income by month</h2>
           </div>
-          <span className="text-xs text-muted-foreground">Purchases, sales, scrap revenue, expenses &amp; payroll</span>
+          <span className="text-xs text-muted-foreground">{currentYear} · 1st to last day of each month</span>
         </div>
         {busy ? (
           <div className="space-y-3 p-5">
@@ -462,62 +334,33 @@ export default function Home() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[700px] text-left text-sm">
+            <table className="w-full min-w-[560px] text-left text-sm">
               <thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground">
                 <tr>
                   <th className="px-5 py-3 font-semibold">Month</th>
-                  <th className="px-5 py-3 text-right font-semibold">Sales &amp; Income</th>
+                  <th className="px-5 py-3 font-semibold">Period</th>
                   <th className="px-5 py-3 text-right font-semibold">Purchases</th>
-                  <th className="px-5 py-3 text-right font-semibold">Expenses</th>
-                  <th className="px-5 py-3 text-right font-semibold">Payroll</th>
-                  <th className="px-5 py-3 text-right font-semibold">Net P&amp;L</th>
+                  <th className="px-5 py-3 text-right font-semibold">Sales</th>
+                  <th className="px-5 py-3 text-right font-semibold">Income</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {monthlyStats.map((month) => {
-                  const monthRevenue = month.sales + month.income + month.scrapRevenue;
-                  const monthCosts = month.purchases + month.expenses + month.payroll;
-                  const monthNet = monthRevenue - monthCosts;
-                  return (
-                    <tr key={month.key} className="hover:bg-muted/40">
-                      <td className="whitespace-nowrap px-5 py-3 font-medium">{month.name}</td>
-                      <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums text-emerald-600 dark:text-emerald-400 font-medium">
-                        {cash(monthRevenue)}
-                      </td>
-                      <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{cash(month.purchases)}</td>
-                      <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{cash(month.expenses)}</td>
-                      <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{cash(month.payroll)}</td>
-                      <td
-                        className={`whitespace-nowrap px-5 py-3 text-right tabular-nums font-bold ${
-                          monthNet >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
-                        }`}
-                      >
-                        {cash(monthNet)}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {monthlyStats.map((month) => (
+                  <tr key={month.key} className="hover:bg-muted/40">
+                    <td className="whitespace-nowrap px-5 py-3 font-medium">{month.name}</td>
+                    <td className="whitespace-nowrap px-5 py-3 text-muted-foreground tabular-nums">1 – {month.lastDay}</td>
+                    <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{inr(month.purchases)}</td>
+                    <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{inr(month.sales)}</td>
+                    <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{inr(month.income)}</td>
+                  </tr>
+                ))}
               </tbody>
-              <tfoot className="border-t-2 border-border font-semibold bg-muted/30">
+              <tfoot className="border-t border-border font-semibold">
                 <tr>
-                  <td className="whitespace-nowrap px-5 py-3">Year total ({currentYear})</td>
-                  <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums text-emerald-600 font-bold">
-                    {cash(monthlyTotals.sales + monthlyTotals.income)}
-                  </td>
-                  <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums font-bold">{cash(monthlyTotals.purchases)}</td>
-                  <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums font-bold">{cash(monthlyTotals.expenses)}</td>
-                  <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums font-bold">{cash(monthlyTotals.payroll)}</td>
-                  <td
-                    className={`whitespace-nowrap px-5 py-3 text-right tabular-nums font-bold ${
-                      monthlyTotals.sales + monthlyTotals.income - (monthlyTotals.purchases + monthlyTotals.expenses + monthlyTotals.payroll) >= 0
-                        ? 'text-emerald-600'
-                        : 'text-rose-600'
-                    }`}
-                  >
-                    {cash(
-                      monthlyTotals.sales + monthlyTotals.income - (monthlyTotals.purchases + monthlyTotals.expenses + monthlyTotals.payroll)
-                    )}
-                  </td>
+                  <td className="whitespace-nowrap px-5 py-3" colSpan={2}>Year total</td>
+                  <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{inr(monthlyTotals.purchases)}</td>
+                  <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{inr(monthlyTotals.sales)}</td>
+                  <td className="whitespace-nowrap px-5 py-3 text-right tabular-nums">{inr(monthlyTotals.income)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -525,41 +368,41 @@ export default function Home() {
         )}
       </section>
 
-      {/* Daily Operations Quick Actions */}
       <section className="border border-border bg-card shadow-sm">
         <div className="border-b border-border px-5 py-4">
           <h2 className="font-heading text-xl font-semibold">Daily operations</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Direct shortcuts to operational sections.</p>
+          <p className="mt-1 text-xs text-muted-foreground">Jump straight into common jobs.</p>
         </div>
-        <div className="grid md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid md:grid-cols-2">
           {actions.map(([icon, title, description, to]) => (
-            <Link
-              key={to}
-              to={to}
-              className="group flex gap-4 border-b border-border p-5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:odd:border-r"
-            >
+            <Link key={to} to={to} className="group flex gap-4 border-b border-border p-5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:odd:border-r">
               <span className="flex size-10 shrink-0 items-center justify-center rounded-sm bg-muted">
                 <ApperIcon name={icon} size={19} />
               </span>
               <span>
                 <span className="block text-sm font-semibold">{title}</span>
                 <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{description}</span>
-                <span className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-primary">
-                  Open <ApperIcon name="ArrowRight" size={13} />
-                </span>
+                <span className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-primary">Open <ApperIcon name="ArrowRight" size={13} /></span>
               </span>
             </Link>
           ))}
         </div>
       </section>
+    </div>
+  );
+}
 
-      {/* PDF / Printable Financial Statement Modal */}
-      <FinancialReportPdfModal
-        open={reportModalOpen}
-        onOpenChange={setReportModalOpen}
-        periodLabel={range.label}
-        financials={periodFinancials}
-      />
+function FinanceBar({ label, value, max }) {
+  const width = max > 0 ? Math.min(100, value / max * 100) : 0;
+  return (
+    <div>
+      <div className="flex justify-between gap-3 text-sm">
+        <span className="text-muted-foreground">{label}</span>
+        <b>{inr(value)}</b>
+      </div>
+      <div className="mt-2 h-2 bg-muted">
+        <div className="h-2 bg-primary" style={{ width: width + '%' }} />
+      </div>
     </div>
   );
 }

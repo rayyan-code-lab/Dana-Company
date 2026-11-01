@@ -34,6 +34,7 @@ const ATTENDANCE_FIELDS = [
 const STATUS_OPTIONS = [
   { key: 'Present', stored: 'Present', label: 'Present' },
   { key: 'Leave', stored: 'Leave', label: 'Leave' },
+  { key: 'Absent', stored: 'Absent', label: 'Absent' },
 ];
 
 function lookupId(value) {
@@ -95,7 +96,8 @@ function formatCombinedTiming(arrivalTime, leavingTime) {
 function storedToUiStatus(status) {
   if (!status) return 'Present';
   const s = String(status).toLowerCase();
-  if (s === 'leave' || s === 'absent') return 'Leave';
+  if (s === 'absent') return 'Absent';
+  if (s === 'leave') return 'Leave';
   return 'Present';
 }
 
@@ -453,7 +455,7 @@ export default function AttendanceDaybook() {
           existingByKey = response.data ?? [];
         }
         const current = record ?? existingByKey[0] ?? null;
-        const storedStatus = draft.status === 'Leave' ? 'Leave' : 'Present';
+        const storedStatus = draft.status === 'Leave' ? 'Leave' : draft.status === 'Absent' ? 'Absent' : 'Present';
         const wageSnapshot = current?.wagePerDay_c != null ? Number(current.wagePerDay_c) : Number(draft.wage ?? worker.dailyRate_c ?? 0);
         const units = storedStatus === 'Present' ? 1 : 0;
         const earned = roundMoney(wageSnapshot * units);
@@ -639,9 +641,10 @@ export default function AttendanceDaybook() {
             </section>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <Summary label="Present" value={countStatus('Present')} />
             <Summary label="On Leave" value={countStatus('Leave')} />
+            <Summary label="Absent" value={countStatus('Absent')} />
             <section className="border border-border bg-card p-4">
               <p className="text-xs font-medium text-muted-foreground">Earned wages today</p>
               <p className="mt-2 font-heading text-xl font-semibold tabular-nums">{cash(earnedTotal)}</p>
@@ -693,10 +696,11 @@ export default function AttendanceDaybook() {
                   const pending = Boolean(worker._pendingHelper);
                   const isPresent = draft.status === 'Present';
                   const isLeave = draft.status === 'Leave';
+                  const isAbsent = draft.status === 'Absent';
                   const earnings = dailyStatusEarnings(draft.status, draft.wage);
                   return (
                     <div key={worker.Id} className="space-y-3 px-4 py-4">
-                      <div className="grid gap-3 sm:grid-cols-[minmax(180px,1.2fr)_100px_minmax(280px,1.5fr)_110px] sm:items-center">
+                      <div className="grid gap-3 sm:grid-cols-[minmax(180px,1.2fr)_100px_minmax(320px,1.8fr)_110px] sm:items-center">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="truncate font-semibold">{worker.Name}</p>
@@ -714,11 +718,11 @@ export default function AttendanceDaybook() {
                           <p className="text-xs text-muted-foreground">Daily wage</p>
                           <p className="mt-1 font-semibold tabular-nums">{cash(draft.wage)}</p>
                         </div>
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <Button
                             type="button"
                             size="sm"
-                            className={`min-h-10 rounded-sm px-4 font-semibold ${
+                            className={`min-h-10 rounded-sm px-3.5 font-semibold ${
                               isPresent
                                 ? 'bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-700'
                                 : 'border border-border bg-background text-muted-foreground hover:bg-muted'
@@ -732,16 +736,30 @@ export default function AttendanceDaybook() {
                           <Button
                             type="button"
                             size="sm"
-                            className={`min-h-10 rounded-sm px-4 font-semibold ${
+                            className={`min-h-10 rounded-sm px-3.5 font-semibold ${
                               isLeave
-                                ? 'bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-600 dark:hover:bg-rose-700'
+                                ? 'bg-amber-600 text-white hover:bg-amber-700 dark:bg-amber-600 dark:hover:bg-amber-700'
                                 : 'border border-border bg-background text-muted-foreground hover:bg-muted'
                             }`}
                             aria-pressed={isLeave}
                             onClick={() => changeStatus(worker, 'Leave')}
                           >
-                            <ApperIcon name="X" size={14} className="mr-1.5" />
+                            <ApperIcon name="Calendar" size={14} className="mr-1.5" />
                             Leave
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className={`min-h-10 rounded-sm px-3.5 font-semibold ${
+                              isAbsent
+                                ? 'bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-600 dark:hover:bg-rose-700'
+                                : 'border border-border bg-background text-muted-foreground hover:bg-muted'
+                            }`}
+                            aria-pressed={isAbsent}
+                            onClick={() => changeStatus(worker, 'Absent')}
+                          >
+                            <ApperIcon name="X" size={14} className="mr-1.5" />
+                            Absent
                           </Button>
                           <div className="flex items-center gap-1.5">
                             <label htmlFor={'attendance-ot-' + worker.Id} className="sr-only">Overtime hours</label>
@@ -897,11 +915,13 @@ export default function AttendanceDaybook() {
                       </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-semibold ${
-                          row.status_c === 'Leave' || row.status_c === 'Absent'
+                          row.status_c === 'Absent'
                             ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400'
+                            : row.status_c === 'Leave'
+                            ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
                             : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                         }`}>
-                          {row.status_c === 'Leave' || row.status_c === 'Absent' ? 'Leave' : 'Present'}
+                          {row.status_c === 'Absent' ? 'Absent' : row.status_c === 'Leave' ? 'Leave' : 'Present'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums">

@@ -3,19 +3,27 @@ import { Input } from '@/components/ui/input';
 import ApperIcon from '@/components/ApperIcon';
 import { getPeriodRange, shiftPeriod } from '@/services/periods';
 
-const OPTIONS = [
+const DEFAULT_OPTIONS = [
   { value: 'month', label: 'Monthly' },
   { value: 'week', label: 'Weekly' },
   { value: 'day', label: 'Daily' },
 ];
 
-export default function PeriodControls({ type, onTypeChange, anchorDate, onAnchorDateChange }) {
+const YEARLY_OPTIONS = [
+  { value: 'year', label: 'Yearly' },
+  { value: 'month', label: 'Monthly' },
+  { value: 'week', label: 'Weekly' },
+  { value: 'day', label: 'Daily' },
+];
+
+export default function PeriodControls({ type, onTypeChange, anchorDate, onAnchorDateChange, showYearly = false }) {
   const period = getPeriodRange(type, anchorDate);
+  const options = showYearly ? YEARLY_OPTIONS : DEFAULT_OPTIONS;
 
   return (
     <section className="flex flex-col gap-3 border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Date period">
-        {OPTIONS.map((option) => (
+        {options.map((option) => (
           <Button
             key={option.value}
             type="button"
