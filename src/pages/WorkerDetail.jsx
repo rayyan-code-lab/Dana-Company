@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 
 const WORKER_FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c', 'shift_c', 'shiftTiming_c'];
-const ATTENDANCE_FIELDS = ['Name', 'worker_c', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'attendanceUnits_c', 'earnedWage_c', 'attendanceKey_c', 'notes_c'];
+const ATTENDANCE_FIELDS = ['Name', 'worker_c', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'attendanceUnits_c', 'earnedWage_c', 'attendanceKey_c', 'shift_c', 'notes_c'];
 const PAYMENT_FIELDS = ['Id', 'Name', 'worker_c', 'paymentDate_c', 'amount_c', 'paymentMethod_c', 'transactionType_c', 'notes_c', 'CreatedOn'];
 const PAYROLL_FIELDS = ['Name', 'worker_c', 'payPeriod_c', 'daysPresent_c', 'grossPay_c', 'advance_c', 'deductions_c', 'netPay_c', 'status_c', 'paidOn_c', 'notes_c'];
 
@@ -91,12 +91,38 @@ export default function WorkerDetailPage() {
       <PeriodControls type={periodType} onTypeChange={setPeriodType} anchorDate={anchorDate} onAnchorDateChange={setAnchorDate} />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <Metric label="Counted units" value={summary.attendanceUnits.toLocaleString('en-IN')} note={summary.fullDays + ' full · ' + summary.halfDays + ' half' + (summary.overtimeHours > 0 ? ' · ' + summary.overtimeHours + ' OT hrs' : '')} />
-        <Metric label="Total earned" value={cash(summary.cumulativeEarned)} note="All attendance through period end" />
-        <Metric label="Earned in period" value={cash(summary.earned)} note={range.label} />
-        <Metric label="Total advances given" value={cash(summary.cumulativeAdvances)} note={cash(summary.periodAdvances) + ' in selected period'} />
-        <Metric label="Wage payments" value={cash(summary.periodPaid)} note="Transactions in selected period" />
-        <Metric label={summary.closingBalance < 0 ? 'Advance / credit balance' : 'Pending balance'} value={cash(Math.abs(summary.closingBalance))} note="Earned minus paid and advances, through period end" />
+        <Metric
+          label="Total shifts"
+          value={summary.totalShifts.toLocaleString('en-IN')}
+          note={summary.dayShifts + ' day · ' + summary.nightShifts + ' night' + (summary.overtimeHours > 0 ? ' · ' + summary.overtimeHours + ' OT hrs' : '')}
+        />
+        <Metric
+          label="Opening balance"
+          value={summary.openingBalance > 0 ? cash(summary.openingBalance) + ' due' : summary.openingBalance < 0 ? cash(Math.abs(summary.openingBalance)) + ' credit' : cash(0)}
+          note={summary.openingBalance !== 0 ? 'Prior balance before ' + range.label : 'No prior dues before ' + range.label}
+        />
+        <Metric
+          label="Earned in period"
+          value={cash(summary.earned)}
+          note={range.label + ' (' + summary.totalShifts + ' shift' + (summary.totalShifts === 1 ? '' : 's') + ')'}
+        />
+        <Metric
+          label="Wage payments"
+          value={cash(summary.periodPaid)}
+          note={'Disbursed in ' + range.label}
+        />
+        <Metric
+          label="Advances taken"
+          value={cash(summary.periodAdvances)}
+          note={'Advances in ' + range.label}
+        />
+        <Metric
+          label={summary.closingBalance < 0 ? 'Advance / credit balance' : 'Closing balance'}
+          value={cash(Math.abs(summary.closingBalance)) + (summary.closingBalance > 0 ? ' due' : summary.closingBalance < 0 ? ' credit' : '')}
+          note={summary.openingBalance !== 0
+            ? cash(summary.periodNet) + ' this period · ' + cash(summary.openingBalance) + ' prior'
+            : 'Earned minus disbursements'}
+        />
       </div>
 
       <section className="overflow-hidden border border-border bg-card">

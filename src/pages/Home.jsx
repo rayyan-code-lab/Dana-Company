@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useFetch } from '@/hooks/useFetch';
 import { sdk } from '@/services/sdk';
-import { todayLocalDate } from '@/services/periods';
+import { todayLocalDate, getPeriodRange } from '@/services/periods';
 import { getProducedStockBalances } from '@/services/productionWorkflow';
 import ApperIcon from '@/components/ApperIcon';
+import PeriodControls from '@/components/PeriodControls';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -33,6 +35,10 @@ const inr = (value) => new Intl.NumberFormat('en-IN', {
 }).format(Number(value ?? 0));
 
 const kg = (value) => `${Number(value ?? 0).toLocaleString('en-IN')} kg`;
+
+function lookupId(value) {
+  return String(value?.Id ?? value ?? '');
+}
 
 function toLocalDateLabel(value) {
   if (!value) return '—';
@@ -75,32 +81,59 @@ export default function Home() {
 
   const allReads = [salesRecords, expenseRecords, purchases, otherIncome, workers, attendance];
   const busy = allReads.some((item) => item.data === undefined);
+  const [periodType, setPeriodType] = useState('month');
+  const [anchorDate, setAnchorDate] = useState(todayLocalDate());
+  const range = getPeriodRange(periodType, anchorDate);
   const today = todayLocalDate();
 
-  const salesTotal = (salesRecords.data ?? []).reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
-  const incomeTotal = (otherIncome.data ?? [])
-    .filter((row) => row.entryType_c === 'Other Income')
-    .reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
+  const isInPeriod = (d) => {
+    if (!d) return false;
+    return d >= range.start && d <= range.end;
+  };
+
+  const periodPurchases = (purchases.data ?? [])
+    .filter((row) => row.recordStatus_c !== 'Cancelled' && isInPeriod(row.purchaseDate_c));
+  const purchasesTotal = periodPurchases.reduce((sum, row) => sum + Number(row.totalPurchaseValue_c ?? 0), 0);
+
+  const periodSales = (salesRecords.data ?? []).filter((row) => isInPeriod(row.saleDate_c));
+  const salesTotal = periodSales.reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
+
+  const periodOtherIncome = (otherIncome.data ?? [])
+    .filter((row) => row.entryType_c === 'Other Income' && isInPeriod(row.entryDate_c));
+  const incomeTotal = periodOtherIncome.reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
   const salesAndIncome = salesTotal + incomeTotal;
-  const expensesTotal = (expenseRecords.data ?? []).reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
-  const purchasesTotal = (purchases.data ?? [])
-    .filter((row) => row.recordStatus_c !== 'Cancelled')
-    .reduce((sum, row) => sum + Number(row.totalPurchaseValue_c ?? 0), 0);
-  const legacyPurchaseTotal = (otherIncome.data ?? [])
-    .filter((row) => row.entryType_c === 'Purchase')
-    .reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
+
+  const periodExpenses = (expenseRecords.data ?? []).filter((row) => isInPeriod(row.expenseDate_c));
+  const expensesTotal = periodExpenses.reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
+
+  const periodLegacyPurchase = (otherIncome.data ?? [])
+    .filter((row) => row.entryType_c === 'Purchase' && isInPeriod(row.entryDate_c));
+  const legacyPurchaseTotal = periodLegacyPurchase.reduce((sum, row) => sum + Number(row.amount_c ?? 0), 0);
   const spending = expensesTotal + purchasesTotal + legacyPurchaseTotal;
 
-  // Attendance statistics for today
-  const todayAttendance = (attendance.data ?? []).filter((row) => row.attendanceDate_c === today);
+  // Attendance target date: anchorDate if viewing 'day', else today
+  const attendanceTargetDate = periodType === 'day' ? anchorDate : today;
+  const dayAttendance = (attendance.data ?? []).filter((row) => row.attendanceDate_c === attendanceTargetDate);
   const activeWorkers = (workers.data ?? []).filter((worker) => worker.status_c === 'Active');
   const activeWorkerCount = activeWorkers.length;
-  const presentCount = todayAttendance.filter((row) => row.status_c === 'Present' || row.status_c === 'Full Day').length;
-  const leaveCount = todayAttendance.filter((row) => row.status_c === 'Leave').length;
-  const absentCount = todayAttendance.filter((row) => row.status_c === 'Absent').length;
+
+  const presentWorkerIds = new Set(
+    dayAttendance
+      .filter((row) => row.status_c === 'Present' || row.status_c === 'Full Day')
+      .map((row) => lookupId(row.worker_c))
+  );
+  const presentCount = presentWorkerIds.size;
+  const totalShiftsPresent = dayAttendance.filter((row) => row.status_c === 'Present' || row.status_c === 'Full Day').length;
+
+  const leaveWorkerIds = new Set(dayAttendance.filter((row) => row.status_c === 'Leave').map((row) => lookupId(row.worker_c)));
+  const leaveCount = leaveWorkerIds.size;
+
+  const absentWorkerIds = new Set(dayAttendance.filter((row) => row.status_c === 'Absent').map((row) => lookupId(row.worker_c)));
+  const absentCount = absentWorkerIds.size;
+
   const unmarkedCount = Math.max(0, activeWorkerCount - presentCount - leaveCount - absentCount);
 
-  const currentYear = Number(today.slice(0, 4));
+  const currentYear = Number(anchorDate.slice(0, 4));
   const monthlyStats = Array.from({ length: 12 }, (_, index) => {
     const monthKey = `${currentYear}-${String(index + 1).padStart(2, '0')}`;
     const inMonth = (value) => String(value ?? '').startsWith(monthKey);
@@ -157,6 +190,17 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Period Selection (Yearly, Monthly, Weekly, Daily) */}
+      <div className="border border-border bg-card p-4 shadow-sm">
+        <PeriodControls
+          type={periodType}
+          anchor={anchorDate}
+          onTypeChange={setPeriodType}
+          onAnchorChange={setAnchorDate}
+          showYearly={true}
+        />
+      </div>
+
       {busy ? (
         <div className="grid gap-4 sm:grid-cols-2">
           <Skeleton className="h-36" />
@@ -168,14 +212,21 @@ export default function Home() {
         <div className="grid gap-4 sm:grid-cols-2">
           {/* Left Column: Total Purchases + Section below it for Workers Present */}
           <div className="space-y-4">
-            <Metric label="Total purchases" value={inr(purchasesTotal)} note="Excluding cancelled purchases" icon="ShoppingCart" />
+            <Metric
+              label="Total purchases"
+              value={inr(purchasesTotal)}
+              note={`Purchases in ${range.label}`}
+              icon="ShoppingCart"
+            />
 
             {/* Section below Total Purchases showing workers present */}
             <section className="border border-border bg-card p-5 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">Daily workforce attendance</p>
-                  <h2 className="mt-1 font-heading text-lg font-semibold">Workers present today</h2>
+                  <h2 className="mt-1 font-heading text-lg font-semibold">
+                    Workers present {attendanceTargetDate === today ? 'today' : `(${toLocalDateLabel(attendanceTargetDate)})`}
+                  </h2>
                 </div>
                 <span className="flex size-9 items-center justify-center rounded-sm bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
                   <ApperIcon name="Users" size={18} />
@@ -188,6 +239,7 @@ export default function Home() {
                 </p>
                 <span className="text-sm font-medium text-muted-foreground">
                   / {activeWorkerCount} active workers
+                  {totalShiftsPresent > presentCount && ` (${totalShiftsPresent} shifts)`}
                 </span>
               </div>
 
@@ -209,7 +261,7 @@ export default function Home() {
               </div>
 
               <div className="mt-4 border-t border-border pt-3 flex justify-between items-center text-xs">
-                <span className="text-muted-foreground">Date: {toLocalDateLabel(today)}</span>
+                <span className="text-muted-foreground">Date: {toLocalDateLabel(attendanceTargetDate)}</span>
                 <Button asChild size="sm" variant="ghost" className="h-7 text-xs font-semibold text-primary p-0 hover:bg-transparent">
                   <Link to="/attendance">
                     Open daybook <ApperIcon name="ArrowRight" size={12} className="ml-1" />
@@ -221,7 +273,12 @@ export default function Home() {
 
           {/* Right Column: Sales & Income + Quick Entry */}
           <div className="space-y-4">
-            <Metric label="Sales & income" value={inr(salesAndIncome)} note="Sales register plus other income" icon="TrendingUp" />
+            <Metric
+              label="Sales & income"
+              value={inr(salesAndIncome)}
+              note={`Sales & other income in ${range.label}`}
+              icon="TrendingUp"
+            />
 
             <section className="border border-border bg-card p-5 shadow-sm">
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-highlight">Quick operations</p>
@@ -296,12 +353,12 @@ export default function Home() {
 
       <section className="border border-border bg-card p-5 shadow-sm">
         <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-highlight">Finance snapshot</p>
-        <h2 className="mt-2 font-heading text-xl font-semibold">Recorded money flow</h2>
+        <h2 className="mt-2 font-heading text-xl font-semibold">Recorded money flow ({range.label})</h2>
         <div className="mt-6 space-y-5">
           <FinanceBar label="Sales & other income" value={salesAndIncome} max={salesAndIncome + spending} />
           <FinanceBar label="Expenses & purchases (including legacy)" value={spending} max={salesAndIncome + spending} />
           <div className="border-t border-border pt-4">
-            <p className="text-xs text-muted-foreground">Difference on recorded entries</p>
+            <p className="text-xs text-muted-foreground">Difference on recorded entries ({range.label})</p>
             <p className="mt-1 font-heading text-2xl font-semibold">{inr(salesAndIncome - spending)}</p>
           </div>
         </div>

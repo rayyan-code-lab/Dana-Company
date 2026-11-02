@@ -8,8 +8,26 @@ export const cash = (value) => new Intl.NumberFormat('en-IN', {
   maximumFractionDigits: 2,
 }).format(Number(value ?? 0));
 
+export function parseWorkerRef(value) {
+  if (!value) return { Id: '', Name: '' };
+  if (typeof value === 'object') return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        return { Id: trimmed, Name: trimmed };
+      }
+    }
+    return { Id: trimmed, Name: trimmed };
+  }
+  return { Id: String(value), Name: String(value) };
+}
+
 export function workerIdOf(value) {
-  return String(value?.Id ?? value ?? '');
+  const ref = parseWorkerRef(value);
+  return String(ref?.Id ?? '');
 }
 
 export function unitsForStatus(status) {
@@ -24,6 +42,10 @@ export function attendanceEarnings(record, worker) {
   const units = Number.isFinite(Number(record.attendanceUnits_c))
     ? Number(record.attendanceUnits_c)
     : unitsForStatus(status);
+  if (units === 0) return 0;
+  if (record.earnedWage_c != null && !Number.isNaN(Number(record.earnedWage_c))) {
+    return roundMoney(Number(record.earnedWage_c));
+  }
   const rate = record.wagePerDay_c != null
     ? money(record.wagePerDay_c)
     : money(worker?.dailyRate_c);
@@ -31,14 +53,14 @@ export function attendanceEarnings(record, worker) {
 }
 
 export function sameWorker(record, worker) {
-  const reference = record.worker_c;
-  const referenceId = workerIdOf(reference);
-  if (referenceId && worker?.Id && referenceId === String(worker.Id)) {
-    return true;
-  }
-  if (reference?.Name && worker?.Name && String(reference.Name).trim() === String(worker.Name).trim()) {
-    return true;
-  }
+  const ref = parseWorkerRef(record.worker_c);
+  const refId = String(ref?.Id ?? '');
+  const refName = String(ref?.Name ?? '').trim().toLowerCase();
+  const workerId = String(worker?.Id ?? '');
+  const workerName = String(worker?.Name ?? '').trim().toLowerCase();
+
+  if (refId && workerId && refId === workerId) return true;
+  if (refName && workerName && refName === workerName) return true;
   return false;
 }
 
@@ -64,45 +86,82 @@ export function calculateWorkerWageSummary({
   legacyPayroll = [],
   range,
 }) {
+  const normDate = (d) => String(d ?? '').slice(0, 10);
+
   const workerAttendance = attendance.filter((row) => sameWorker(row, worker));
-  const relevantAttendance = workerAttendance.filter((row) => {
-    const date = String(row.attendanceDate_c ?? '');
-    return date && date <= range.end;
+  const workerPayments = payments.filter((row) => sameWorker(row, worker));
+  const legacy = legacyPayroll.filter((row) => sameWorker(row, worker));
+
+  // Prior period calculations (strictly before range.start)
+  const priorAttendance = workerAttendance.filter((row) => {
+    const d = normDate(row.attendanceDate_c);
+    return d && d < range.start && row.status_c !== 'Unmarked';
   });
-  const periodAttendance = relevantAttendance.filter((row) => {
-    const date = String(row.attendanceDate_c ?? '');
-    return date >= range.start && date <= range.end && row.status_c !== 'Unmarked';
+  const priorEarned = roundMoney(priorAttendance.reduce((sum, row) => sum + attendanceEarnings(row, worker), 0));
+
+  const priorPayments = workerPayments.filter((row) => {
+    const d = normDate(row.paymentDate_c);
+    return d && d < range.start;
   });
-  const cumulativeEarned = roundMoney(relevantAttendance.reduce((sum, row) => {
-    return sum + attendanceEarnings(row, worker);
-  }, 0));
+  const priorRecordedPaid = roundMoney(priorPayments.reduce((sum, row) => sum + money(row.amount_c), 0));
+  const priorLegacyDisbursed = roundMoney(legacy.reduce((sum, row) => sum + legacyPayrollDisbursed(row, range.start), 0));
+  const priorPaid = roundMoney(priorRecordedPaid + priorLegacyDisbursed);
+  const openingBalance = roundMoney(priorEarned - priorPaid);
+
+  // Period attendance (range.start to range.end)
+  const periodAttendance = workerAttendance.filter((row) => {
+    const d = normDate(row.attendanceDate_c);
+    return d && d >= range.start && d <= range.end && row.status_c !== 'Unmarked';
+  });
   const earned = roundMoney(periodAttendance.reduce((sum, row) => {
     return sum + attendanceEarnings(row, worker);
   }, 0));
-  const fullDays = periodAttendance.filter((row) => unitsForStatus(row.status_c) === 1).length;
-  const halfDays = periodAttendance.filter((row) => unitsForStatus(row.status_c) === 0.5).length;
+
+  const attendedRows = periodAttendance.filter((row) => unitsForStatus(row.status_c) > 0);
+  const dayShifts = attendedRows.filter((row) => (row.shift_c || worker?.shift_c || 'Day Shift') !== 'Night Shift').length;
+  const nightShifts = attendedRows.filter((row) => (row.shift_c || worker?.shift_c) === 'Night Shift').length;
+  const totalShifts = dayShifts + nightShifts;
+  const fullDays = totalShifts;
+  const halfDays = dayShifts;
   const attendanceUnits = roundMoney(periodAttendance.reduce((sum, row) => sum + unitsForStatus(row.status_c), 0));
   const overtimeHours = roundMoney(periodAttendance.reduce((sum, row) => sum + Number(row.overtimeHours_c || 0), 0));
-  const workerPayments = payments.filter((row) => sameWorker(row, worker));
-  const paymentsThroughPeriod = workerPayments.filter((row) => row.paymentDate_c && row.paymentDate_c <= range.end);
-  const periodPayments = paymentsThroughPeriod.filter((row) => row.paymentDate_c >= range.start && row.paymentDate_c <= range.end);
-  const cumulativeRecordedPaid = roundMoney(paymentsThroughPeriod.reduce((sum, row) => sum + money(row.amount_c), 0));
-  const newPeriodPaid = periodPayments.filter((row) => row.transactionType_c !== 'Advance')
-    .reduce((sum, row) => sum + money(row.amount_c), 0);
+
+  // Period payments
+  const periodPayments = workerPayments.filter((row) => {
+    const d = normDate(row.paymentDate_c);
+    return d && d >= range.start && d <= range.end;
+  });
+  const newPeriodPaid = roundMoney(periodPayments.filter((row) => row.transactionType_c !== 'Advance')
+    .reduce((sum, row) => sum + money(row.amount_c), 0));
   const periodAdvances = roundMoney(periodPayments.filter((row) => row.transactionType_c === 'Advance')
     .reduce((sum, row) => sum + money(row.amount_c), 0));
-  const legacy = legacyPayroll.filter((row) => sameWorker(row, worker));
-  const legacyPaidInPeriod = legacy.reduce((sum, row) => {
+
+  const legacyPaidInPeriod = roundMoney(legacy.reduce((sum, row) => {
     if (row.status_c !== 'Paid' || !row.paidOn_c) return sum;
-    return row.paidOn_c >= range.start && row.paidOn_c <= range.end
-      ? sum + money(row.netPay_c)
-      : sum;
-  }, 0);
+    const paidD = normDate(row.paidOn_c);
+    return paidD >= range.start && paidD <= range.end ? sum + money(row.netPay_c) : sum;
+  }, 0));
   const periodPaid = roundMoney(newPeriodPaid + legacyPaidInPeriod);
+  const totalPeriodDisbursed = roundMoney(periodPaid + periodAdvances);
+  const periodNet = roundMoney(earned - totalPeriodDisbursed);
+
+  // Cumulative through period end
+  const relevantAttendance = workerAttendance.filter((row) => {
+    const d = normDate(row.attendanceDate_c);
+    return d && d <= range.end && row.status_c !== 'Unmarked';
+  });
+  const cumulativeEarned = roundMoney(relevantAttendance.reduce((sum, row) => sum + attendanceEarnings(row, worker), 0));
+
+  const paymentsThroughPeriod = workerPayments.filter((row) => {
+    const d = normDate(row.paymentDate_c);
+    return d && d <= range.end;
+  });
+  const cumulativeRecordedPaid = roundMoney(paymentsThroughPeriod.reduce((sum, row) => sum + money(row.amount_c), 0));
   const legacyDisbursed = roundMoney(legacy.reduce((sum, row) => sum + legacyPayrollDisbursed(row, range.end), 0));
   const cumulativePaid = roundMoney(cumulativeRecordedPaid + legacyDisbursed);
   const cumulativeAdvances = roundMoney(paymentsThroughPeriod.filter((row) => row.transactionType_c === 'Advance')
     .reduce((sum, row) => sum + money(row.amount_c), 0));
+
   const closingBalance = roundMoney(cumulativeEarned - cumulativePaid);
   const legacyRows = legacy.filter((row) => {
     const bounds = payPeriodBounds(row.payPeriod_c);
@@ -111,14 +170,21 @@ export function calculateWorkerWageSummary({
 
   return {
     worker,
+    totalShifts,
+    dayShifts,
+    nightShifts,
     fullDays,
     halfDays,
     attendanceUnits,
     overtimeHours,
     earned,
     cumulativeEarned,
+    openingBalance,
+    periodNet,
     periodPaid,
     periodAdvances,
+    totalPeriodDisbursed,
+    cumulativePaid,
     cumulativeAdvances,
     closingBalance,
     advanceCredit: Math.max(0, -closingBalance),
@@ -126,6 +192,5 @@ export function calculateWorkerWageSummary({
     periodAttendance,
     periodPayments,
     legacyRows,
-    cumulativePaid,
   };
 }

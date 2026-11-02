@@ -135,10 +135,10 @@ async function loadDay(date) {
   return { workers, records };
 }
 
-function findRecordForWorker(records, worker) {
+function findRecordsForWorker(records, worker) {
   const exact = records.filter((row) => lookupId(row.worker_c) === String(worker.Id));
-  if (exact.length) return exact.sort((a, b) => String(b.ModifiedOn ?? b.CreatedOn ?? '').localeCompare(String(a.ModifiedOn ?? a.CreatedOn ?? '')))[0];
-  return records.find((row) => normalizeName(row.worker_c?.Name) === normalizeName(worker.Name));
+  if (exact.length) return exact;
+  return records.filter((row) => normalizeName(row.worker_c?.Name) === normalizeName(worker.Name));
 }
 
 function dailyStatusEarnings(status, wage) {
@@ -155,6 +155,7 @@ export default function AttendanceDaybook() {
   const [search, setSearch] = useState('');
   const [shiftFilter, setShiftFilter] = useState('All');
   const [drafts, setDrafts] = useState({});
+  const [deletedRecordIds, setDeletedRecordIds] = useState([]);
   const [pendingHelpers, setPendingHelpers] = useState([]);
   const [helperOpen, setHelperOpen] = useState(false);
   const [helperForm, setHelperForm] = useState({
@@ -217,69 +218,167 @@ export default function AttendanceDaybook() {
   useEffect(() => {
     const next = {};
     roster.forEach((worker) => {
-      const record = findRecordForWorker(dayRecords, worker);
-      const defaultRate = record?.wagePerDay_c ?? worker.dailyRate_c ?? 0;
-      const shift = record?.shift_c || worker.shift_c || 'Day Shift';
-      const existingTimingStr = record?.shiftTiming_c || worker.shiftTiming_c || (shift === 'Night Shift' ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM');
-      const { arrivalTime, leavingTime } = parseTimings(existingTimingStr, shift);
-      next[String(worker.Id)] = {
-        recordId: record?.Id ?? null,
-        sourceRecord: record ?? null,
-        status: record ? storedToUiStatus(record.status_c) : 'Present',
-        shift,
-        arrivalTime,
-        leavingTime,
-        shiftTiming: existingTimingStr,
-        wage: Number(defaultRate),
-        overtimeHours: (record?.overtimeHours_c != null && Number(record.overtimeHours_c) > 0) ? String(record.overtimeHours_c) : '',
-        notes: record?.notes_c ?? '',
-      };
+      const records = findRecordsForWorker(dayRecords, worker);
+      const defaultRate = Number(worker.dailyRate_c ?? 0);
+      const workerDefaultShift = worker.shift_c || 'Day Shift';
+
+      if (records.length > 0) {
+        next[String(worker.Id)] = records.map((record) => {
+          const shift = record.shift_c || workerDefaultShift;
+          const defaultTiming = shift === 'Night Shift' ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM';
+          const timingStr = record.shiftTiming_c || worker.shiftTiming_c || defaultTiming;
+          const { arrivalTime, leavingTime } = parseTimings(timingStr, shift);
+          return {
+            id: record.Id,
+            recordId: record.Id,
+            sourceRecord: record,
+            status: storedToUiStatus(record.status_c),
+            shift,
+            arrivalTime,
+            leavingTime,
+            shiftTiming: timingStr,
+            wage: Number(record.wagePerDay_c ?? defaultRate),
+            overtimeHours: (record.overtimeHours_c != null && Number(record.overtimeHours_c) > 0) ? String(record.overtimeHours_c) : '',
+            notes: record.notes_c ?? '',
+          };
+        });
+      } else {
+        const defaultTiming = workerDefaultShift === 'Night Shift' ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM';
+        const timingStr = worker.shiftTiming_c || defaultTiming;
+        const { arrivalTime, leavingTime } = parseTimings(timingStr, workerDefaultShift);
+        next[String(worker.Id)] = [{
+          id: 'draft-' + workerDefaultShift,
+          recordId: null,
+          sourceRecord: null,
+          status: 'Present',
+          shift: workerDefaultShift,
+          arrivalTime,
+          leavingTime,
+          shiftTiming: timingStr,
+          wage: defaultRate,
+          overtimeHours: '',
+          notes: '',
+        }];
+      }
     });
     setDrafts(next);
+    setDeletedRecordIds([]);
     setDirty(false);
   }, [selectedDate, dayData]);
 
   const visibleWorkers = roster.filter((worker) => {
-    const draft = drafts[String(worker.Id)];
-    const currentShift = draft?.shift || worker.shift_c || 'Day Shift';
-    if (shiftFilter !== 'All' && currentShift !== shiftFilter) return false;
+    const list = drafts[String(worker.Id)] || [];
+    if (shiftFilter !== 'All') {
+      const hasMatchingShift = list.some((s) => s.shift === shiftFilter);
+      if (!hasMatchingShift) return false;
+    }
     if (!search.trim()) return true;
     const query = search.trim().toLocaleLowerCase();
     return String(worker.Name).toLocaleLowerCase().includes(query)
       || String(worker.role_c ?? '').toLocaleLowerCase().includes(query)
-      || String(currentShift).toLocaleLowerCase().includes(query)
-      || String(draft?.shiftTiming ?? '').toLocaleLowerCase().includes(query);
+      || list.some((s) =>
+        String(s.shift).toLocaleLowerCase().includes(query)
+        || String(s.shiftTiming ?? '').toLocaleLowerCase().includes(query)
+        || String(s.notes ?? '').toLocaleLowerCase().includes(query)
+      );
   });
 
-  const countStatus = (status) => roster.filter((worker) => (drafts[String(worker.Id)]?.status ?? 'Present') === status).length;
+  const countStatus = (status) => {
+    let count = 0;
+    roster.forEach((worker) => {
+      const list = drafts[String(worker.Id)] || [];
+      list.forEach((s) => {
+        if (s.status === status) count++;
+      });
+    });
+    return count;
+  };
+
   const earnedTotal = roster.reduce((sum, worker) => {
-    const draft = drafts[String(worker.Id)];
-    if (!draft) return sum;
-    return sum + dailyStatusEarnings(draft.status, draft.wage);
+    const list = drafts[String(worker.Id)] || [];
+    return sum + list.reduce((sub, s) => sub + dailyStatusEarnings(s.status, s.wage), 0);
   }, 0);
 
   function changeDate(nextDate) {
     if (!nextDate || nextDate === selectedDate) return;
     if (dirty && !window.confirm('Discard unsaved attendance changes for ' + selectedDate + '?')) return;
     setPendingHelpers([]);
+    setDeletedRecordIds([]);
     setSelectedDate(nextDate);
     setDirty(false);
   }
 
-  function changeStatus(worker, status) {
+  function changeStatus(worker, shiftIndex, status) {
     const key = String(worker.Id);
     setDrafts((current) => {
-      const prior = current[key] ?? {
-        status: 'Present',
-        wage: Number(worker.dailyRate_c ?? 0),
-        arrivalTime: '09:00',
-        leavingTime: '21:00',
-        overtimeHours: '',
-        notes: '',
-        sourceRecord: null,
-        recordId: null,
-      };
-      return { ...current, [key]: { ...prior, status } };
+      const list = current[key] ? [...current[key]] : [];
+      if (!list[shiftIndex]) return current;
+      list[shiftIndex] = { ...list[shiftIndex], status };
+      return { ...current, [key]: list };
+    });
+    setDirty(true);
+  }
+
+  function updateShiftField(worker, shiftIndex, field, value) {
+    const key = String(worker.Id);
+    setDrafts((current) => {
+      const list = current[key] ? [...current[key]] : [];
+      if (!list[shiftIndex]) return current;
+      const updated = { ...list[shiftIndex], [field]: value };
+      if (field === 'shift') {
+        const isNight = value === 'Night Shift';
+        updated.arrivalTime = isNight ? '21:00' : '09:00';
+        updated.leavingTime = isNight ? '09:00' : '21:00';
+        updated.shiftTiming = isNight ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM';
+      }
+      list[shiftIndex] = updated;
+      return { ...current, [key]: list };
+    });
+    setDirty(true);
+  }
+
+  function addSecondShift(worker) {
+    const key = String(worker.Id);
+    const list = drafts[key] || [];
+    const hasDay = list.some((s) => s.shift === 'Day Shift');
+    const newShift = hasDay ? 'Night Shift' : 'Day Shift';
+    const isNight = newShift === 'Night Shift';
+    const defaultTiming = isNight ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM';
+    const { arrivalTime, leavingTime } = parseTimings(defaultTiming, newShift);
+    const rate = Number(worker.dailyRate_c ?? 0);
+
+    const newEntry = {
+      id: 'draft-' + newShift + '-' + Date.now(),
+      recordId: null,
+      sourceRecord: null,
+      status: 'Present',
+      shift: newShift,
+      arrivalTime,
+      leavingTime,
+      shiftTiming: defaultTiming,
+      wage: rate,
+      overtimeHours: '',
+      notes: '',
+    };
+
+    setDrafts((current) => ({
+      ...current,
+      [key]: [...(current[key] || []), newEntry],
+    }));
+    setDirty(true);
+    toast.info(`Added ${newShift} for ${worker.Name}`);
+  }
+
+  function removeShift(worker, shiftIndex) {
+    const key = String(worker.Id);
+    setDrafts((current) => {
+      const list = current[key] ? [...current[key]] : [];
+      const removed = list[shiftIndex];
+      if (removed?.recordId) {
+        setDeletedRecordIds((prev) => [...prev, removed.recordId]);
+      }
+      const updated = list.filter((_, idx) => idx !== shiftIndex);
+      return { ...current, [key]: updated };
     });
     setDirty(true);
   }
@@ -304,23 +403,44 @@ export default function AttendanceDaybook() {
     const alreadyListed = roster.find((worker) => normalizeName(worker.Name) === normalizeName(name));
     if (alreadyListed) {
       const key = String(alreadyListed.Id);
-      setDrafts((current) => ({
-        ...current,
-        [key]: {
-          ...(current[key] ?? {}),
-          status: helperForm.status,
-          shift: helperForm.shift,
-          arrivalTime: helperForm.arrivalTime,
-          leavingTime: helperForm.leavingTime,
-          shiftTiming: timing,
-          wage: rate,
-          notes: helperForm.notes.trim(),
-          overtimeHours: current[key]?.overtimeHours ?? '',
-          sourceRecord: current[key]?.sourceRecord ?? null,
-          recordId: current[key]?.recordId ?? null,
-        },
-      }));
-      toast.info('This worker is already in today’s list. Their attendance draft has been updated.');
+      const existingList = drafts[key] || [];
+      const hasSameShift = existingList.some((s) => s.shift === helperForm.shift);
+      if (hasSameShift) {
+        setDrafts((current) => ({
+          ...current,
+          [key]: (current[key] || []).map((s) => s.shift === helperForm.shift ? {
+            ...s,
+            status: helperForm.status,
+            arrivalTime: helperForm.arrivalTime,
+            leavingTime: helperForm.leavingTime,
+            shiftTiming: timing,
+            wage: rate,
+            notes: helperForm.notes.trim(),
+          } : s),
+        }));
+        toast.info(`Updated ${helperForm.shift} for ${alreadyListed.Name}`);
+      } else {
+        setDrafts((current) => ({
+          ...current,
+          [key]: [
+            ...(current[key] || []),
+            {
+              id: 'helper-' + helperForm.shift + '-' + Date.now(),
+              recordId: null,
+              sourceRecord: null,
+              status: helperForm.status,
+              shift: helperForm.shift,
+              arrivalTime: helperForm.arrivalTime,
+              leavingTime: helperForm.leavingTime,
+              shiftTiming: timing,
+              wage: rate,
+              overtimeHours: '',
+              notes: helperForm.notes.trim(),
+            },
+          ],
+        }));
+        toast.success(`Added ${helperForm.shift} for ${alreadyListed.Name}`);
+      }
       setHelperOpen(false);
       setHelperForm({ name: '', dailyRate: '', status: 'Present', shift: 'Day Shift', arrivalTime: '09:00', leavingTime: '21:00', notes: '', saveForFuture: false });
       setDirty(true);
@@ -349,7 +469,8 @@ export default function AttendanceDaybook() {
     setPendingHelpers((current) => [...current.filter((row) => normalizeName(row.Name) !== normalizeName(name)), helper]);
     setDrafts((current) => ({
       ...current,
-      [key]: {
+      [key]: [{
+        id: 'helper-' + helperForm.shift,
         recordId: null,
         sourceRecord: null,
         status: helperForm.status,
@@ -360,7 +481,7 @@ export default function AttendanceDaybook() {
         wage: rate,
         overtimeHours: '',
         notes: helperForm.notes.trim(),
-      },
+      }],
     }));
     setHelperForm({ name: '', dailyRate: '', status: 'Present', shift: 'Day Shift', arrivalTime: '09:00', leavingTime: '21:00', notes: '', saveForFuture: false });
     setHelperOpen(false);
@@ -422,6 +543,17 @@ export default function AttendanceDaybook() {
         if (!allWorkers.some((worker) => String(worker.Id) === String(resolved.Id))) allWorkers = [...allWorkers, resolved];
       }
 
+      // Delete removed shifts if any
+      if (deletedRecordIds.length) {
+        for (const delId of deletedRecordIds) {
+          try {
+            await sdk.table('attendance_c').delete(delId);
+          } catch (delErr) {
+            console.warn('Could not delete attendance record', delId, delErr);
+          }
+        }
+      }
+
       const freshDay = await loadDay(selectedDate);
       const creates = [];
       const updates = [];
@@ -433,55 +565,68 @@ export default function AttendanceDaybook() {
           const resolved = allWorkers.find((item) => normalizeName(item.Name) === normalizeName(originalWorker.Name));
           if (resolved) worker = resolved;
         }
-        const draft = drafts[draftKey];
-        if (!draft || !worker?.Id) continue;
+        const shiftList = drafts[draftKey];
+        if (!shiftList || !shiftList.length || !worker?.Id) continue;
 
-        const record = findRecordForWorker(freshDay.records, worker);
+        const workerFreshRecords = findRecordsForWorker(freshDay.records, worker);
 
-        const key = String(worker.Id) + ':' + selectedDate;
-        if (attendanceKeySeen.has(key)) {
-          toast.warning('A duplicate worker/date entry was skipped: ' + worker.Name);
-          continue;
+        for (const shiftDraft of shiftList) {
+          const shiftName = shiftDraft.shift || 'Day Shift';
+          const key = `${worker.Id}:${selectedDate}:${shiftName}`;
+          if (attendanceKeySeen.has(key)) {
+            toast.warning(`Duplicate shift entry for ${worker.Name} (${shiftName}) was skipped.`);
+            continue;
+          }
+          attendanceKeySeen.add(key);
+
+          // Find if there is an existing record matching recordId or shift
+          let matchingRecord = null;
+          if (shiftDraft.recordId) {
+            matchingRecord = workerFreshRecords.find((r) => String(r.Id) === String(shiftDraft.recordId));
+          }
+          if (!matchingRecord) {
+            matchingRecord = workerFreshRecords.find((r) => r.shift_c === shiftName || r.attendanceKey_c === key);
+          }
+          if (!matchingRecord && !workerFreshRecords.length) {
+            const response = await sdk.table('attendance_c')
+              .select(ATTENDANCE_FIELDS)
+              .where(eq('attendanceKey_c', key))
+              .page(1, 1)
+              .fetch();
+            if (response.success && response.data?.length) {
+              matchingRecord = response.data[0];
+            }
+          }
+
+          const current = matchingRecord ?? null;
+          const storedStatus = shiftDraft.status === 'Leave' ? 'Leave' : shiftDraft.status === 'Absent' ? 'Absent' : 'Present';
+          const wageSnapshot = current?.wagePerDay_c != null ? Number(current.wagePerDay_c) : Number(shiftDraft.wage ?? worker.dailyRate_c ?? 0);
+          const units = storedStatus === 'Present' ? 1 : 0;
+          const earned = roundMoney(wageSnapshot * units);
+          const overtimeHours = shiftDraft.overtimeHours === '' ? null : Number(shiftDraft.overtimeHours);
+          if (overtimeHours != null && (!Number.isFinite(overtimeHours) || overtimeHours < 0)) {
+            throw new Error(`Overtime hours cannot be negative for ${worker.Name} (${shiftName}).`);
+          }
+          const combinedTiming = formatCombinedTiming(shiftDraft.arrivalTime, shiftDraft.leavingTime);
+          const payload = {
+            Name: `${worker.Name} · ${selectedDate} (${shiftName})`,
+            worker_c: { Id: worker.Id, Name: worker.Name },
+            attendanceDate_c: selectedDate,
+            status_c: storedStatus,
+            hoursWorked_c: current?.hoursWorked_c ?? null,
+            overtimeHours_c: overtimeHours != null ? overtimeHours : 0,
+            shift_c: shiftName,
+            shiftTiming_c: combinedTiming,
+            notes_c: String(shiftDraft.notes ?? '').trim(),
+            wagePerDay_c: wageSnapshot,
+            attendanceUnits_c: units,
+            earnedWage_c: earned,
+            attendanceKey_c: key,
+            workerTypeSnapshot_c: originalWorker._oneDayHelper || worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular',
+          };
+          if (current?.Id) updates.push({ ...payload, Id: current.Id });
+          else creates.push(payload);
         }
-        attendanceKeySeen.add(key);
-        let existingByKey = [];
-        if (!record) {
-          const response = await sdk.table('attendance_c')
-            .select(ATTENDANCE_FIELDS)
-            .where(eq('attendanceKey_c', key))
-            .page(1, 5)
-            .fetch();
-          if (!response.success) throw new Error(response.message || 'Could not check for an existing attendance entry.');
-          existingByKey = response.data ?? [];
-        }
-        const current = record ?? existingByKey[0] ?? null;
-        const storedStatus = draft.status === 'Leave' ? 'Leave' : draft.status === 'Absent' ? 'Absent' : 'Present';
-        const wageSnapshot = current?.wagePerDay_c != null ? Number(current.wagePerDay_c) : Number(draft.wage ?? worker.dailyRate_c ?? 0);
-        const units = storedStatus === 'Present' ? 1 : 0;
-        const earned = roundMoney(wageSnapshot * units);
-        const overtimeHours = draft.overtimeHours === '' ? null : Number(draft.overtimeHours);
-        if (overtimeHours != null && (!Number.isFinite(overtimeHours) || overtimeHours < 0)) {
-          throw new Error('Overtime hours cannot be negative for ' + worker.Name + '.');
-        }
-        const combinedTiming = formatCombinedTiming(draft.arrivalTime, draft.leavingTime);
-        const payload = {
-          Name: worker.Name + ' · ' + selectedDate,
-          worker_c: { Id: worker.Id, Name: worker.Name },
-          attendanceDate_c: selectedDate,
-          status_c: storedStatus,
-          hoursWorked_c: current?.hoursWorked_c ?? null,
-          overtimeHours_c: overtimeHours != null ? overtimeHours : 0,
-          shift_c: draft.shift || worker.shift_c || 'Day Shift',
-          shiftTiming_c: combinedTiming,
-          notes_c: String(draft.notes ?? '').trim(),
-          wagePerDay_c: wageSnapshot,
-          attendanceUnits_c: units,
-          earnedWage_c: earned,
-          attendanceKey_c: key,
-          workerTypeSnapshot_c: originalWorker._oneDayHelper || worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular',
-        };
-        if (current?.Id) updates.push({ ...payload, Id: current.Id });
-        else creates.push(payload);
       }
 
       let createResponse = { data: [], messages: [], partial: false };
@@ -501,6 +646,7 @@ export default function AttendanceDaybook() {
       } else {
         toast.success('Attendance saved for ' + selectedDate + '.');
         setPendingHelpers([]);
+        setDeletedRecordIds([]);
       }
       setDirty(partialSave);
       if (partialSave) {
@@ -661,7 +807,7 @@ export default function AttendanceDaybook() {
               {['All', 'Day Shift', 'Night Shift'].map((s) => {
                 const count = s === 'All'
                   ? roster.length
-                  : roster.filter((w) => (drafts[String(w.Id)]?.shift || w.shift_c || 'Day Shift') === s).length;
+                  : roster.filter((w) => (drafts[String(w.Id)] || []).some((sh) => sh.shift === s)).length;
                 return (
                   <Button
                     key={s}
@@ -692,171 +838,230 @@ export default function AttendanceDaybook() {
             ) : (
               <div className="divide-y divide-border" aria-busy={saving || dayLoading}>
                 {visibleWorkers.map((worker) => {
-                  const draft = drafts[String(worker.Id)] ?? { status: 'Present', wage: Number(worker.dailyRate_c ?? 0), arrivalTime: '09:00', leavingTime: '21:00', overtimeHours: '', notes: '' };
+                  const workerShifts = drafts[String(worker.Id)] || [];
                   const pending = Boolean(worker._pendingHelper);
-                  const isPresent = draft.status === 'Present';
-                  const isLeave = draft.status === 'Leave';
-                  const isAbsent = draft.status === 'Absent';
-                  const earnings = dailyStatusEarnings(draft.status, draft.wage);
+                  const totalWorkerEarnings = workerShifts.reduce(
+                    (sum, s) => sum + dailyStatusEarnings(s.status, s.wage),
+                    0
+                  );
+                  const hasDay = workerShifts.some((s) => s.shift === 'Day Shift');
+                  const nextShiftName = hasDay ? 'Night Shift' : 'Day Shift';
+
                   return (
                     <div key={worker.Id} className="space-y-3 px-4 py-4">
-                      <div className="grid gap-3 sm:grid-cols-[minmax(180px,1.2fr)_100px_minmax(320px,1.8fr)_110px] sm:items-center">
+                      {/* Worker Header: Name, Role, Base wage, Add Shift action, Total worker earnings */}
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/40 pb-3">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="truncate font-semibold">{worker.Name}</p>
-                            <span className={`inline-flex items-center rounded-sm px-1.5 py-0.5 text-[10px] font-semibold ${
-                              (draft.shift || worker.shift_c) === 'Night Shift'
-                                ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
-                                : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                            }`}>
-                              {draft.shift || worker.shift_c || 'Day Shift'}
+                            <span className="text-xs text-muted-foreground">
+                              · {worker.role_c || 'Helper'} ({worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular'}{pending ? ' · New' : ''})
                             </span>
                           </div>
-                          <p className="mt-1 text-xs text-muted-foreground">{worker.role_c || 'Helper'} · {worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular'}{worker.status_c === 'Inactive' ? ' · Inactive profile' : ''}{pending ? ' · New helper' : ''}</p>
+                          <p className="text-xs text-muted-foreground">
+                            Base rate: {cash(worker.dailyRate_c ?? 0)}/day
+                            {workerShifts.length > 1 && (
+                              <span className="ml-2 font-medium text-primary">
+                                · Working {workerShifts.length} shifts today
+                              </span>
+                            )}
+                          </p>
                         </div>
-                        <div>
-                          <p className="text-xs text-muted-foreground">Daily wage</p>
-                          <p className="mt-1 font-semibold tabular-nums">{cash(draft.wage)}</p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <Button
-                            type="button"
-                            size="sm"
-                            className={`min-h-10 rounded-sm px-3.5 font-semibold ${
-                              isPresent
-                                ? 'bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-700'
-                                : 'border border-border bg-background text-muted-foreground hover:bg-muted'
-                            }`}
-                            aria-pressed={isPresent}
-                            onClick={() => changeStatus(worker, 'Present')}
-                          >
-                            <ApperIcon name="Check" size={14} className="mr-1.5" />
-                            Present
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            className={`min-h-10 rounded-sm px-3.5 font-semibold ${
-                              isLeave
-                                ? 'bg-amber-600 text-white hover:bg-amber-700 dark:bg-amber-600 dark:hover:bg-amber-700'
-                                : 'border border-border bg-background text-muted-foreground hover:bg-muted'
-                            }`}
-                            aria-pressed={isLeave}
-                            onClick={() => changeStatus(worker, 'Leave')}
-                          >
-                            <ApperIcon name="Calendar" size={14} className="mr-1.5" />
-                            Leave
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            className={`min-h-10 rounded-sm px-3.5 font-semibold ${
-                              isAbsent
-                                ? 'bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-600 dark:hover:bg-rose-700'
-                                : 'border border-border bg-background text-muted-foreground hover:bg-muted'
-                            }`}
-                            aria-pressed={isAbsent}
-                            onClick={() => changeStatus(worker, 'Absent')}
-                          >
-                            <ApperIcon name="X" size={14} className="mr-1.5" />
-                            Absent
-                          </Button>
-                          <div className="flex items-center gap-1.5">
-                            <label htmlFor={'attendance-ot-' + worker.Id} className="sr-only">Overtime hours</label>
-                            <Input
-                              id={'attendance-ot-' + worker.Id}
-                              type="number"
-                              min="0"
-                              step="0.25"
-                              value={draft.overtimeHours ?? ''}
-                              onChange={(event) => {
-                                setDrafts((current) => ({ ...current, [String(worker.Id)]: { ...draft, overtimeHours: event.target.value } }));
-                                setDirty(true);
-                              }}
-                              placeholder="OT hrs"
-                              className="h-10 w-20 rounded-sm text-xs"
-                            />
+
+                        <div className="flex items-center gap-3">
+                          {workerShifts.length < 2 && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8 rounded-sm text-xs font-semibold border-dashed text-primary hover:bg-primary/5 hover:border-primary/50"
+                              onClick={() => addSecondShift(worker)}
+                            >
+                              <ApperIcon name="Plus" size={13} className="mr-1" />
+                              Add {nextShiftName}
+                            </Button>
+                          )}
+
+                          <div className="text-right">
+                            <p className="text-[11px] text-muted-foreground">Total earned today</p>
+                            <p className="font-heading text-lg font-semibold tabular-nums text-foreground">
+                              {cash(totalWorkerEarnings)}
+                            </p>
                           </div>
-                        </div>
-                        <div className="text-left sm:text-right">
-                          <p className="text-xs text-muted-foreground">Earned today</p>
-                          <p className="mt-1 font-heading text-lg font-semibold tabular-nums">{cash(earnings)}</p>
                         </div>
                       </div>
 
-                      {/* Timings with clock picker & shift controls */}
-                      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 pt-1 border-t border-border/50">
-                        <div className="flex items-center gap-1.5">
-                          <label htmlFor={'attendance-shift-' + worker.Id} className="text-xs text-muted-foreground w-12 shrink-0">Shift:</label>
-                          <select
-                            id={'attendance-shift-' + worker.Id}
-                            aria-label={`Shift for ${worker.Name}`}
-                            value={draft.shift || 'Day Shift'}
-                            onChange={(e) => {
-                              const newShift = e.target.value;
-                              const isNight = newShift === 'Night Shift';
-                              setDrafts((current) => ({
-                                ...current,
-                                [String(worker.Id)]: {
-                                  ...draft,
-                                  shift: newShift,
-                                  arrivalTime: isNight ? '21:00' : '09:00',
-                                  leavingTime: isNight ? '09:00' : '21:00',
-                                },
-                              }));
-                              setDirty(true);
-                            }}
-                            className="h-9 w-full rounded-sm border border-input bg-background px-2 text-xs font-medium"
-                          >
-                            <option value="Day Shift">Day Shift</option>
-                            <option value="Night Shift">Night Shift</option>
-                          </select>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <label htmlFor={'attendance-in-' + worker.Id} className="text-xs text-muted-foreground w-12 shrink-0">In:</label>
-                          <Input
-                            id={'attendance-in-' + worker.Id}
-                            type="time"
-                            value={draft.arrivalTime || '09:00'}
-                            onChange={(event) => {
-                              setDrafts((current) => ({
-                                ...current,
-                                [String(worker.Id)]: { ...draft, arrivalTime: event.target.value },
-                              }));
-                              setDirty(true);
-                            }}
-                            className="h-9 flex-1 rounded-sm text-xs cursor-pointer"
-                          />
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <label htmlFor={'attendance-out-' + worker.Id} className="text-xs text-muted-foreground w-12 shrink-0">Out:</label>
-                          <Input
-                            id={'attendance-out-' + worker.Id}
-                            type="time"
-                            value={draft.leavingTime || '21:00'}
-                            onChange={(event) => {
-                              setDrafts((current) => ({
-                                ...current,
-                                [String(worker.Id)]: { ...draft, leavingTime: event.target.value },
-                              }));
-                              setDirty(true);
-                            }}
-                            className="h-9 flex-1 rounded-sm text-xs cursor-pointer"
-                          />
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <label htmlFor={'attendance-notes-' + worker.Id} className="sr-only">Notes for {worker.Name}</label>
-                          <Input
-                            id={'attendance-notes-' + worker.Id}
-                            value={draft.notes ?? ''}
-                            onChange={(event) => {
-                              setDrafts((current) => ({ ...current, [String(worker.Id)]: { ...draft, notes: event.target.value } }));
-                              setDirty(true);
-                            }}
-                            placeholder="Optional note"
-                            className="h-9 w-full rounded-sm text-xs"
-                          />
-                        </div>
+                      {/* Render Each Shift for this Worker */}
+                      <div className="space-y-3">
+                        {workerShifts.map((draft, shiftIndex) => {
+                          const isPresent = draft.status === 'Present';
+                          const isLeave = draft.status === 'Leave';
+                          const isAbsent = draft.status === 'Absent';
+                          const earnings = dailyStatusEarnings(draft.status, draft.wage);
+                          const isNight = draft.shift === 'Night Shift';
+
+                          return (
+                            <div
+                              key={draft.id || `${worker.Id}-shift-${shiftIndex}`}
+                              className={`rounded-sm border p-3 transition-colors ${
+                                isNight
+                                  ? 'border-purple-500/30 bg-purple-500/[0.03] dark:border-purple-500/20 dark:bg-purple-950/10'
+                                  : 'border-border bg-card'
+                              }`}
+                            >
+                              <div className="grid gap-3 sm:grid-cols-[minmax(180px,1.2fr)_100px_minmax(320px,1.8fr)_110px] sm:items-center">
+                                {/* Shift Badge & Selector */}
+                                <div className="min-w-0 flex items-center gap-2">
+                                  <span
+                                    className={`inline-flex items-center rounded-sm px-2 py-1 text-xs font-semibold ${
+                                      isNight
+                                        ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                                        : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                                    }`}
+                                  >
+                                    <ApperIcon name={isNight ? 'Moon' : 'Sun'} size={13} className="mr-1" />
+                                    {draft.shift}
+                                  </span>
+
+                                  <select
+                                    aria-label={`Shift type for ${worker.Name}`}
+                                    value={draft.shift || 'Day Shift'}
+                                    onChange={(e) => updateShiftField(worker, shiftIndex, 'shift', e.target.value)}
+                                    className="h-8 rounded-sm border border-input bg-background px-2 text-xs font-medium"
+                                  >
+                                    <option value="Day Shift">Day Shift</option>
+                                    <option value="Night Shift">Night Shift</option>
+                                  </select>
+
+                                  {workerShifts.length > 1 && (
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-8 text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-500/10 px-2"
+                                      title="Remove this shift entry"
+                                      onClick={() => removeShift(worker, shiftIndex)}
+                                    >
+                                      <ApperIcon name="Trash2" size={13} className="mr-1" />
+                                      Remove
+                                    </Button>
+                                  )}
+                                </div>
+
+                                {/* Shift Wage */}
+                                <div>
+                                  <p className="text-[11px] text-muted-foreground">Shift wage</p>
+                                  <p className="mt-0.5 text-sm font-semibold tabular-nums">{cash(draft.wage)}</p>
+                                </div>
+
+                                {/* Status buttons + OT hrs */}
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    className={`min-h-9 rounded-sm px-3 text-xs font-semibold ${
+                                      isPresent
+                                        ? 'bg-emerald-600 text-white hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-700'
+                                        : 'border border-border bg-background text-muted-foreground hover:bg-muted'
+                                    }`}
+                                    aria-pressed={isPresent}
+                                    onClick={() => changeStatus(worker, shiftIndex, 'Present')}
+                                  >
+                                    <ApperIcon name="Check" size={13} className="mr-1" />
+                                    Present
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    className={`min-h-9 rounded-sm px-3 text-xs font-semibold ${
+                                      isLeave
+                                        ? 'bg-amber-600 text-white hover:bg-amber-700 dark:bg-amber-600 dark:hover:bg-amber-700'
+                                        : 'border border-border bg-background text-muted-foreground hover:bg-muted'
+                                    }`}
+                                    aria-pressed={isLeave}
+                                    onClick={() => changeStatus(worker, shiftIndex, 'Leave')}
+                                  >
+                                    <ApperIcon name="Calendar" size={13} className="mr-1" />
+                                    Leave
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    className={`min-h-9 rounded-sm px-3 text-xs font-semibold ${
+                                      isAbsent
+                                        ? 'bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-600 dark:hover:bg-rose-700'
+                                        : 'border border-border bg-background text-muted-foreground hover:bg-muted'
+                                    }`}
+                                    aria-pressed={isAbsent}
+                                    onClick={() => changeStatus(worker, shiftIndex, 'Absent')}
+                                  >
+                                    <ApperIcon name="X" size={13} className="mr-1" />
+                                    Absent
+                                  </Button>
+                                  <div className="flex items-center gap-1.5">
+                                    <Input
+                                      id={`attendance-ot-${worker.Id}-${shiftIndex}`}
+                                      type="number"
+                                      min="0"
+                                      step="0.25"
+                                      value={draft.overtimeHours ?? ''}
+                                      onChange={(event) => updateShiftField(worker, shiftIndex, 'overtimeHours', event.target.value)}
+                                      placeholder="OT hrs"
+                                      className="h-9 w-20 rounded-sm text-xs"
+                                      aria-label="Overtime hours"
+                                    />
+                                  </div>
+                                </div>
+
+                                {/* Shift Earned */}
+                                <div className="text-left sm:text-right">
+                                  <p className="text-[11px] text-muted-foreground">Shift earned</p>
+                                  <p className="mt-0.5 font-heading text-base font-semibold tabular-nums text-foreground">
+                                    {cash(earnings)}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* Timings with clock picker & Notes */}
+                              <div className="mt-2.5 grid gap-2 border-t border-border/50 pt-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                                <div className="flex items-center gap-1.5">
+                                  <label htmlFor={`attendance-in-${worker.Id}-${shiftIndex}`} className="text-xs text-muted-foreground w-12 shrink-0">
+                                    In:
+                                  </label>
+                                  <Input
+                                    id={`attendance-in-${worker.Id}-${shiftIndex}`}
+                                    type="time"
+                                    value={draft.arrivalTime || (isNight ? '21:00' : '09:00')}
+                                    onChange={(e) => updateShiftField(worker, shiftIndex, 'arrivalTime', e.target.value)}
+                                    className="h-8 flex-1 rounded-sm text-xs cursor-pointer"
+                                  />
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <label htmlFor={`attendance-out-${worker.Id}-${shiftIndex}`} className="text-xs text-muted-foreground w-12 shrink-0">
+                                    Out:
+                                  </label>
+                                  <Input
+                                    id={`attendance-out-${worker.Id}-${shiftIndex}`}
+                                    type="time"
+                                    value={draft.leavingTime || (isNight ? '09:00' : '21:00')}
+                                    onChange={(e) => updateShiftField(worker, shiftIndex, 'leavingTime', e.target.value)}
+                                    className="h-8 flex-1 rounded-sm text-xs cursor-pointer"
+                                  />
+                                </div>
+                                <div className="flex items-center gap-1.5 sm:col-span-2 lg:col-span-1">
+                                  <Input
+                                    id={`attendance-notes-${worker.Id}-${shiftIndex}`}
+                                    value={draft.notes ?? ''}
+                                    onChange={(e) => updateShiftField(worker, shiftIndex, 'notes', e.target.value)}
+                                    placeholder="Shift note (optional)"
+                                    className="h-8 w-full rounded-sm text-xs"
+                                    aria-label="Shift note"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   );

@@ -28,9 +28,30 @@ class LocalDatabase {
         return JSON.parse(JSON.stringify(INITIAL_DATA));
       }
       const parsed = JSON.parse(raw);
+      // Clean up legacy template fixtures if present
+      const DEMO_FIXTURES = new Set(['att-001', 'att-002', 'att-003', 'att-004', 'wpay-001', 'wpay-002', 'payr-001']);
+      let modified = false;
+      if (Array.isArray(parsed.attendance_c) && parsed.attendance_c.some((r) => DEMO_FIXTURES.has(r.Id))) {
+        parsed.attendance_c = parsed.attendance_c.filter((r) => !DEMO_FIXTURES.has(r.Id));
+        modified = true;
+      }
+      if (Array.isArray(parsed.worker_payments_c) && parsed.worker_payments_c.some((r) => DEMO_FIXTURES.has(r.Id))) {
+        parsed.worker_payments_c = parsed.worker_payments_c.filter((r) => !DEMO_FIXTURES.has(r.Id));
+        modified = true;
+      }
+      if (Array.isArray(parsed.payroll_c) && parsed.payroll_c.some((r) => DEMO_FIXTURES.has(r.Id))) {
+        parsed.payroll_c = parsed.payroll_c.filter((r) => !DEMO_FIXTURES.has(r.Id));
+        modified = true;
+      }
       // Merge any newly introduced tables from initial data
       for (const [key, rows] of Object.entries(INITIAL_DATA)) {
-        if (!parsed[key]) parsed[key] = rows;
+        if (!parsed[key]) {
+          parsed[key] = rows;
+          modified = true;
+        }
+      }
+      if (modified) {
+        this.save(parsed);
       }
       return parsed;
     } catch {

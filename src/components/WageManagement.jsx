@@ -13,8 +13,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 
-const WORKER_FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c'];
-const ATTENDANCE_FIELDS = ['Name', 'worker_c', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'attendanceUnits_c', 'earnedWage_c', 'attendanceKey_c', 'notes_c'];
+const WORKER_FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'shift_c'];
+const ATTENDANCE_FIELDS = ['Name', 'worker_c', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'attendanceUnits_c', 'earnedWage_c', 'attendanceKey_c', 'shift_c', 'notes_c'];
 const PAYMENT_FIELDS = ['Id', 'Name', 'worker_c', 'paymentDate_c', 'amount_c', 'paymentMethod_c', 'transactionType_c', 'notes_c', 'CreatedOn'];
 const PAYROLL_FIELDS = ['Name', 'worker_c', 'payPeriod_c', 'daysPresent_c', 'grossPay_c', 'advance_c', 'deductions_c', 'netPay_c', 'status_c', 'paidOn_c', 'notes_c'];
 
@@ -214,6 +214,28 @@ export default function WageManagement() {
     }
   }
 
+  async function handleToggleTransactionType(record) {
+    if (!paymentAccess.canUpdate) {
+      toast.error('You do not have permission to edit payments.');
+      return;
+    }
+    const newType = record.transactionType_c === 'Advance' ? 'Wage Payment' : 'Advance';
+    try {
+      const res = await sdk.table('worker_payments_c').update([{
+        Id: record.Id,
+        transactionType_c: newType,
+      }]);
+      if (res.data?.length) {
+        toast.success(`Transaction type updated to ${newType}.`);
+        await run();
+      } else {
+        toast.error('Could not update transaction type.');
+      }
+    } catch (err) {
+      toast.error('Could not update transaction type.', { description: err.message ?? String(err) });
+    }
+  }
+
   return (
     <div className="space-y-6">
       <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -254,11 +276,33 @@ export default function WageManagement() {
               </select>
             </div>
             <div>
-              <label htmlFor="wage-type" className="mb-1.5 block text-sm font-medium">Transaction type *</label>
-              <select id="wage-type" value={form.transactionType} onChange={(event) => setField('transactionType', event.target.value)} className="min-h-10 w-full rounded-sm border border-input bg-background px-3 text-sm">
-                <option value="Wage Payment">Wage payment</option>
-                <option value="Advance">Advance</option>
-              </select>
+              <label className="mb-1.5 block text-sm font-medium">Transaction type *</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setField('transactionType', 'Wage Payment')}
+                  className={`min-h-10 flex items-center justify-center gap-1.5 rounded-sm border text-xs font-semibold transition-all ${
+                    form.transactionType === 'Wage Payment'
+                      ? 'border-emerald-600 bg-emerald-600 text-white shadow-sm'
+                      : 'border-border bg-background text-muted-foreground hover:bg-muted'
+                  }`}
+                >
+                  <ApperIcon name="Wallet" size={14} />
+                  Wage payment
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setField('transactionType', 'Advance')}
+                  className={`min-h-10 flex items-center justify-center gap-1.5 rounded-sm border text-xs font-semibold transition-all ${
+                    form.transactionType === 'Advance'
+                      ? 'border-amber-600 bg-amber-600 text-white shadow-sm'
+                      : 'border-border bg-background text-muted-foreground hover:bg-muted'
+                  }`}
+                >
+                  <ApperIcon name="HandCoins" size={14} />
+                  Advance
+                </button>
+              </div>
             </div>
             <div>
               <label htmlFor="wage-amount" className="mb-1.5 block text-sm font-medium">Amount (₹) *</label>
@@ -314,9 +358,9 @@ export default function WageManagement() {
             <table className="w-full min-w-[1050px] text-left text-sm">
               <thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr>
                 <th className="px-4 py-3">Worker</th>
-                <th className="px-4 py-3 text-right">Full days</th>
-                <th className="px-4 py-3 text-right">Half days</th>
-                <th className="px-4 py-3 text-right">Counted units</th>
+                <th className="px-4 py-3 text-right">Total shifts</th>
+                <th className="px-4 py-3 text-right">Day shifts</th>
+                <th className="px-4 py-3 text-right">Night shifts</th>
                 <th className="px-4 py-3 text-right">Earned</th>
                 <th className="px-4 py-3 text-right">Paid in period</th>
                 <th className="px-4 py-3 text-right">Advances in period</th>
@@ -329,16 +373,41 @@ export default function WageManagement() {
                     <p className="font-semibold">{item.worker.Name}</p>
                     <p className="mt-1 text-xs text-muted-foreground">{item.worker.role_c || 'Worker'} · {item.worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular'}{item.worker.status_c === 'Inactive' ? ' · Inactive' : ''}</p>
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums">{item.fullDays}</td>
-                  <td className="px-4 py-3 text-right tabular-nums">{item.halfDays}</td>
-                  <td className="px-4 py-3 text-right tabular-nums">{item.attendanceUnits.toLocaleString('en-IN')}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{item.totalShifts}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{item.dayShifts}</td>
+                  <td className="px-4 py-3 text-right tabular-nums">{item.nightShifts}</td>
                   <td className="px-4 py-3 text-right font-semibold tabular-nums">{cash(item.earned)}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{cash(item.periodPaid)}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{cash(item.periodAdvances)}</td>
                   <td className="px-4 py-3 text-right">
-                    {item.closingBalance > 0 ? <span className="font-semibold text-warning-foreground">{cash(item.closingBalance)} due</span>
-                      : item.closingBalance < 0 ? <span className="font-semibold text-primary">{cash(item.advanceCredit)} credit</span>
-                        : <span className="font-semibold">{cash(0)}</span>}
+                    {item.closingBalance > 0 ? (
+                      <div>
+                        <span className="font-semibold text-warning-foreground">{cash(item.closingBalance)} due</span>
+                        {item.openingBalance !== 0 && (
+                          <span className="block text-[11px] text-muted-foreground whitespace-nowrap">
+                            {cash(item.periodNet)} this period · {cash(item.openingBalance)} prior
+                          </span>
+                        )}
+                      </div>
+                    ) : item.closingBalance < 0 ? (
+                      <div>
+                        <span className="font-semibold text-primary">{cash(item.advanceCredit)} credit</span>
+                        {item.openingBalance !== 0 && (
+                          <span className="block text-[11px] text-muted-foreground whitespace-nowrap">
+                            {cash(item.periodNet)} this period · {cash(item.openingBalance)} prior
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div>
+                        <span className="font-semibold">{cash(0)}</span>
+                        {item.openingBalance !== 0 && (
+                          <span className="block text-[11px] text-muted-foreground whitespace-nowrap">
+                            {cash(item.periodNet)} this period · {cash(item.openingBalance)} prior
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3"><Button asChild size="sm" variant="outline" className="rounded-sm"><Link to={'/workers/' + item.worker.Id}>View statement</Link></Button></td>
                 </tr>
@@ -381,13 +450,20 @@ export default function WageManagement() {
                       <td className="px-4 py-3 font-medium">{record.paymentDate_c}</td>
                       <td className="px-4 py-3 font-semibold">{workerName}</td>
                       <td className="px-4 py-3">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                          record.transactionType_c === 'Advance'
-                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                            : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                        }`}>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleTransactionType(record)}
+                          title="Click to switch between Advance and Wage Payment"
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-xs font-medium border transition-colors ${
+                            record.transactionType_c === 'Advance'
+                              ? 'bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/20'
+                              : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
+                          }`}
+                        >
+                          <ApperIcon name={record.transactionType_c === 'Advance' ? 'HandCoins' : 'Wallet'} size={12} />
                           {record.transactionType_c}
-                        </span>
+                          <span className="text-[10px] opacity-60 underline ml-0.5">switch</span>
+                        </button>
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{record.paymentMethod_c}</td>
                       <td className="px-4 py-3 text-muted-foreground max-w-xs truncate">{record.notes_c || '—'}</td>
