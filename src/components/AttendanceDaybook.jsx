@@ -545,12 +545,10 @@ export default function AttendanceDaybook() {
 
       // Delete removed shifts if any
       if (deletedRecordIds.length) {
-        for (const delId of deletedRecordIds) {
-          try {
-            await sdk.table('attendance_c').delete(delId);
-          } catch (delErr) {
-            console.warn('Could not delete attendance record', delId, delErr);
-          }
+        try {
+          await sdk.table('attendance_c').remove(deletedRecordIds);
+        } catch (delErr) {
+          console.warn('Could not delete attendance records', deletedRecordIds, delErr);
         }
       }
 

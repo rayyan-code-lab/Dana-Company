@@ -337,6 +337,10 @@ class DualModeQueryBuilder {
     }
   }
 
+  async delete(idOrIds) {
+    return this.remove(idOrIds);
+  }
+
   async clear() {
     this.assertPermission('delete');
     return fastClearTable(this.tableName);

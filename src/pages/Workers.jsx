@@ -4,6 +4,7 @@ import { sdk, contains, eq, or, isNull } from '@/services/sdk';
 import { useFetch } from '@/hooks/useFetch';
 import { useProfile } from '@/hooks/useProfile';
 import { getTableAccess } from '@/services/userPermissions';
+import { sameWorker } from '@/services/wageCalculations';
 import { formatLocalDate, DATE_FORMATS } from '@/utils/date';
 import { toast } from 'sonner';
 import ApperIcon from '@/components/ApperIcon';
@@ -12,7 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 
-const FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c', 'shift_c', 'shiftTiming_c'];
+const FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c', 'shift_c', 'shiftTiming_c', 'isArchived_c'];
 
 export const route = { path: '/workers', layout: 'owner', access: 'authenticated' };
 export const nav = { icon: 'Users', label: 'Workers', section: 'People', order: 30 };
@@ -23,8 +24,12 @@ const cash = (value) => new Intl.NumberFormat('en-IN', { style: 'currency', curr
 async function loadWorkers(search, status, type, shift, page) {
   let query = sdk.table('workers_c').select(FIELDS);
   if (search.trim()) query = query.where(contains('Name', search.trim()));
-  if (status !== 'All') query = query.where(eq('status_c', status));
-  query = query.where(or(eq('isArchived_c', false), isNull('isArchived_c')));
+  if (status === 'Archived') {
+    query = query.where(eq('isArchived_c', true));
+  } else {
+    query = query.where(or(eq('isArchived_c', false), isNull('isArchived_c')));
+    if (status !== 'All') query = query.where(eq('status_c', status));
+  }
   if (type !== 'All') query = query.where(type === 'Regular' ? or(eq('workerType_c', type), isNull('workerType_c'), eq('workerType_c', '')) : eq('workerType_c', type));
   if (shift !== 'All') query = query.where(shift === 'Day Shift' ? or(eq('shift_c', shift), isNull('shift_c'), eq('shift_c', '')) : eq('shift_c', shift));
   const response = await query.orderBy('Name').page(page, PAGE_SIZE).fetch();
@@ -53,9 +58,29 @@ export default function WorkersPage() {
     }
   }
 
-  async function archiveWorker(worker) {
+  async function archiveWorker(worker, deleteRecords = false) {
     setArchiving(true);
     try {
+      if (deleteRecords) {
+        try {
+          const [attRes, payRes] = await Promise.all([
+            sdk.table('attendance_c').select(['Id', 'worker_c']).page(1, 1000).fetch(),
+            sdk.table('worker_payments_c').select(['Id', 'worker_c']).page(1, 1000).fetch(),
+          ]);
+
+          const attIds = (attRes.data || []).filter((r) => sameWorker(r, worker)).map((r) => r.Id);
+          const payIds = (payRes.data || []).filter((r) => sameWorker(r, worker)).map((r) => r.Id);
+          if (attIds.length) await sdk.table('attendance_c').remove(attIds);
+          if (payIds.length) await sdk.table('worker_payments_c').remove(payIds);
+          await sdk.table('workers_c').remove(worker.Id);
+          toast.success(`${worker.Name} and all associated shifts and payments were permanently deleted.`);
+          refresh();
+          return;
+        } catch (cleanupErr) {
+          console.warn('Partial cleanup for', worker.Name, cleanupErr);
+        }
+      }
+
       const res = await sdk.table('workers_c').update({ Id: worker.Id, isArchived_c: true });
       if (res.messages.length) {
         toast.error(res.messages[0], { description: res.messages.slice(1).join('\n') || undefined, duration: 8000 });
@@ -63,11 +88,28 @@ export default function WorkersPage() {
         return;
       }
       if (!res.data.length) return;
-      toast.success(worker.Name + ' was removed from the register.');
+      toast.success(`${worker.Name} was removed from the active register.`);
       refresh();
     } catch (archiveError) {
       toast.error('Could not remove worker.', { description: archiveError.message ?? String(archiveError) });
       console.error(`workers_c archive failed: ${archiveError.message ?? String(archiveError)}`);
+    } finally {
+      setArchiving(false);
+    }
+  }
+
+  async function restoreWorker(worker) {
+    setArchiving(true);
+    try {
+      const res = await sdk.table('workers_c').update({ Id: worker.Id, isArchived_c: false });
+      if (res.data?.length) {
+        toast.success(`${worker.Name} restored to active register.`);
+        refresh();
+      } else {
+        toast.error('Could not restore worker.');
+      }
+    } catch (err) {
+      toast.error('Could not restore worker.', { description: err.message ?? String(err) });
     } finally {
       setArchiving(false);
     }
@@ -95,9 +137,10 @@ export default function WorkersPage() {
           <option value="Night Shift">Night Shift</option>
         </select>
         <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="Filter by worker status" className="min-h-10 rounded-sm border border-input bg-background px-3 text-sm">
-          <option value="All">All statuses</option>
-          <option value="Active">Active</option>
-          <option value="Inactive">Inactive</option>
+          <option value="All">All active statuses</option>
+          <option value="Active">Active only</option>
+          <option value="Inactive">Inactive only</option>
+          <option value="Archived">Removed / Archived</option>
         </select>
         <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} aria-label="Filter by worker type" className="min-h-10 rounded-sm border border-input bg-background px-3 text-sm">
           <option value="All">All worker types</option>
@@ -127,17 +170,95 @@ export default function WorkersPage() {
                   </td>
                   <td className="px-4 py-3">{worker.workerType_c || 'Regular'}</td>
                   <td className="px-4 py-3 text-right font-semibold tabular-nums">{worker.payType_c === 'Monthly Salary' ? cash(worker.monthlySalary_c) + ' / month' : cash(worker.dailyRate_c) + ' / day'}</td>
-                  <td className="px-4 py-3"><span className={'inline-flex border px-2 py-1 text-xs ' + (worker.status_c === 'Active' ? 'border-success-border bg-success-muted text-success' : 'border-border bg-muted text-muted-foreground')}>{worker.status_c || 'Active'}</span></td>
+                  <td className="px-4 py-3">
+                    {worker.isArchived_c ? (
+                      <span className="inline-flex border border-destructive/30 bg-destructive/10 px-2 py-1 text-xs font-medium text-destructive">
+                        Removed
+                      </span>
+                    ) : (
+                      <span className={'inline-flex border px-2 py-1 text-xs ' + (worker.status_c === 'Active' ? 'border-success-border bg-success-muted text-success' : 'border-border bg-muted text-muted-foreground')}>
+                        {worker.status_c || 'Active'}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 whitespace-nowrap">{worker.joinedOn_c ? formatLocalDate(worker.joinedOn_c, DATE_FORMATS.SHORT) : '—'}</td>
-                  <td className="px-4 py-3"><div className="flex gap-2"><Button asChild size="sm" variant="outline" className="rounded-sm"><Link to={'/workers/' + worker.Id}>Statement</Link></Button>{access.canUpdate && <Button asChild size="sm" variant="outline" className="rounded-sm"><Link to={'/workers/' + worker.Id + '/edit'}>Edit</Link></Button>}{access.canDelete && (
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild><Button size="sm" variant="outline" className="rounded-sm text-destructive"><ApperIcon name="Trash2" size={14} /> Remove</Button></AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader><AlertDialogTitle>Remove {worker.Name}?</AlertDialogTitle><AlertDialogDescription>The worker will be hidden from the register. Their attendance, payments, and wage history are kept.</AlertDialogDescription></AlertDialogHeader>
-                        <AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => archiveWorker(worker)} disabled={archiving} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Remove worker</AlertDialogAction></AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  )}</div></td>
+                  <td className="px-4 py-3">
+                    <div className="flex gap-2">
+                      <Button asChild size="sm" variant="outline" className="rounded-sm">
+                        <Link to={'/workers/' + worker.Id}>Statement</Link>
+                      </Button>
+                      {worker.isArchived_c ? (
+                        <>
+                          {access.canUpdate && (
+                            <Button size="sm" variant="outline" className="rounded-sm" onClick={() => restoreWorker(worker)} disabled={archiving}>
+                              <ApperIcon name="RotateCcw" size={14} className="mr-1" /> Restore
+                            </Button>
+                          )}
+                          {access.canDelete && (
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button size="sm" variant="destructive" className="rounded-sm">
+                                  <ApperIcon name="Trash2" size={14} className="mr-1" /> Purge all
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Permanently delete {worker.Name}?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    This will permanently erase {worker.Name} and all associated attendance, wages, and payment records from the system. This cannot be undone.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                  <AlertDialogAction
+                                    onClick={() => archiveWorker(worker, true)}
+                                    disabled={archiving}
+                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  >
+                                    Purge worker & all records
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {access.canUpdate && (
+                            <Button asChild size="sm" variant="outline" className="rounded-sm">
+                              <Link to={'/workers/' + worker.Id + '/edit'}>Edit</Link>
+                            </Button>
+                          )}
+                          {access.canDelete && (
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button size="sm" variant="outline" className="rounded-sm text-destructive">
+                                  <ApperIcon name="Trash2" size={14} /> Remove
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>Remove {worker.Name}?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    Choose whether to keep or delete attendance and payment records for this worker.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter className="flex-col gap-2 sm:flex-row">
+                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                  <AlertDialogAction onClick={() => archiveWorker(worker, false)} disabled={archiving} className="bg-amber-600 text-white hover:bg-amber-700">
+                                    Remove · keep records
+                                  </AlertDialogAction>
+                                  <AlertDialogAction onClick={() => archiveWorker(worker, true)} disabled={archiving} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                                    Remove · delete all records
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               );})}</tbody></table></div>}
       </section>

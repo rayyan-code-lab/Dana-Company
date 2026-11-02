@@ -389,6 +389,10 @@ class QueryBuilder {
       messages: [],
     };
   }
+
+  async delete(idOrIds) {
+    return this.remove(idOrIds);
+  }
 }
 
 // Session Management

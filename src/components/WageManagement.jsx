@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 
-const WORKER_FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'shift_c'];
+const WORKER_FIELDS = ['Id', 'Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'shift_c', 'isArchived_c'];
 const ATTENDANCE_FIELDS = ['Name', 'worker_c', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'attendanceUnits_c', 'earnedWage_c', 'attendanceKey_c', 'shift_c', 'notes_c'];
 const PAYMENT_FIELDS = ['Id', 'Name', 'worker_c', 'paymentDate_c', 'amount_c', 'paymentMethod_c', 'transactionType_c', 'notes_c', 'CreatedOn'];
 const PAYROLL_FIELDS = ['Name', 'worker_c', 'payPeriod_c', 'daysPresent_c', 'grossPay_c', 'advance_c', 'deductions_c', 'netPay_c', 'status_c', 'paidOn_c', 'notes_c'];
@@ -371,7 +371,7 @@ export default function WageManagement() {
                 <tr key={item.worker.Id} className="hover:bg-muted/30">
                   <td className="px-4 py-3">
                     <p className="font-semibold">{item.worker.Name}</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{item.worker.role_c || 'Worker'} · {item.worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular'}{item.worker.status_c === 'Inactive' ? ' · Inactive' : ''}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{item.worker.role_c || 'Worker'} · {item.worker.workerType_c === 'Temporary' ? 'Temporary' : 'Regular'}{item.worker.isArchived_c ? ' · Removed' : item.worker.status_c === 'Inactive' ? ' · Inactive' : ''}</p>
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">{item.totalShifts}</td>
                   <td className="px-4 py-3 text-right tabular-nums">{item.dayShifts}</td>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { sdk, lte } from '@/services/sdk';
 import { useFetch } from '@/hooks/useFetch';
 import { useProfile } from '@/hooks/useProfile';
@@ -7,13 +7,14 @@ import { getTableAccess } from '@/services/userPermissions';
 import { todayLocalDate, getPeriodRange } from '@/services/periods';
 import { calculateWorkerWageSummary, cash, sameWorker } from '@/services/wageCalculations';
 import { formatLocalDate, DATE_FORMATS } from '@/utils/date';
+import { toast } from 'sonner';
 import ApperIcon from '@/components/ApperIcon';
 import PeriodControls from '@/components/PeriodControls';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 
-const WORKER_FIELDS = ['Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c', 'shift_c', 'shiftTiming_c'];
-const ATTENDANCE_FIELDS = ['Name', 'worker_c', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'attendanceUnits_c', 'earnedWage_c', 'attendanceKey_c', 'shift_c', 'notes_c'];
+const WORKER_FIELDS = ['Id', 'Name', 'role_c', 'phone_c', 'dailyRate_c', 'status_c', 'joinedOn_c', 'notes_c', 'workerType_c', 'payType_c', 'monthlySalary_c', 'shift_c', 'shiftTiming_c', 'isArchived_c'];
+const ATTENDANCE_FIELDS = ['Id', 'Name', 'worker_c', 'attendanceDate_c', 'status_c', 'wagePerDay_c', 'attendanceUnits_c', 'earnedWage_c', 'attendanceKey_c', 'shift_c', 'notes_c', 'overtimeHours_c'];
 const PAYMENT_FIELDS = ['Id', 'Name', 'worker_c', 'paymentDate_c', 'amount_c', 'paymentMethod_c', 'transactionType_c', 'notes_c', 'CreatedOn'];
 const PAYROLL_FIELDS = ['Name', 'worker_c', 'payPeriod_c', 'daysPresent_c', 'grossPay_c', 'advance_c', 'deductions_c', 'netPay_c', 'status_c', 'paidOn_c', 'notes_c'];
 
@@ -54,8 +55,11 @@ export const route = { path: '/workers/:id', layout: 'owner', access: 'authentic
 
 export default function WorkerDetailPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { profile } = useProfile();
   const access = getTableAccess(profile, 'workers_c');
+  const attendanceAccess = getTableAccess(profile, 'attendance_c');
+  const paymentAccess = getTableAccess(profile, 'worker_payments_c');
   const [periodType, setPeriodType] = useState('month');
   const [anchorDate, setAnchorDate] = useState(todayLocalDate());
   const range = getPeriodRange(periodType, anchorDate);
@@ -70,6 +74,73 @@ export default function WorkerDetailPage() {
   const paymentRows = summary.periodPayments.slice().sort((a, b) => String(b.paymentDate_c).localeCompare(String(a.paymentDate_c)));
   const legacyRows = summary.legacyRows;
 
+  async function handleDeleteAttendance(row) {
+    if (!attendanceAccess.canDelete) {
+      toast.error('You do not have permission to delete attendance records.');
+      return;
+    }
+    const dateLabel = formatLocalDate(row.attendanceDate_c, DATE_FORMATS.SHORT);
+    const wage = cash(row.earnedWage_c ?? 0);
+    if (!window.confirm(`Delete the shift on ${dateLabel}? This will remove the ${wage} earned wage from the ledger.`)) {
+      return;
+    }
+    try {
+      const res = await sdk.table('attendance_c').remove(row.Id);
+      if (res.success) {
+        toast.success(`Shift record on ${dateLabel} deleted.`);
+        await run();
+      } else {
+        toast.error('Could not delete shift record.');
+      }
+    } catch (err) {
+      toast.error('Could not delete shift record.', { description: err.message ?? String(err) });
+    }
+  }
+
+  async function handleDeletePayment(record) {
+    if (!paymentAccess.canDelete) {
+      toast.error('You do not have permission to delete payment records.');
+      return;
+    }
+    const dateLabel = formatLocalDate(record.paymentDate_c, DATE_FORMATS.SHORT);
+    const amount = cash(record.amount_c ?? 0);
+    if (!window.confirm(`Delete this ${record.transactionType_c} of ${amount} on ${dateLabel}?`)) {
+      return;
+    }
+    try {
+      const res = await sdk.table('worker_payments_c').remove(record.Id);
+      if (res.success) {
+        toast.success('Payment record removed.');
+        await run();
+      } else {
+        toast.error('Could not remove payment record.');
+      }
+    } catch (err) {
+      toast.error('Could not remove payment record.', { description: err.message ?? String(err) });
+    }
+  }
+
+  async function handlePurgeWorkerAndRecords() {
+    if (!access.canDelete) {
+      toast.error('You do not have permission to delete workers.');
+      return;
+    }
+    if (!window.confirm(`Permanently delete ${worker.Name} and ALL associated shifts, wages, and payments? This will completely erase them from the system.`)) {
+      return;
+    }
+    try {
+      const attIds = (attendance || []).map((r) => r.Id).filter(Boolean);
+      const payIds = (payments || []).map((r) => r.Id).filter(Boolean);
+      if (attIds.length) await sdk.table('attendance_c').remove(attIds);
+      if (payIds.length) await sdk.table('worker_payments_c').remove(payIds);
+      await sdk.table('workers_c').remove(worker.Id);
+      toast.success(`${worker.Name} and all records permanently purged.`);
+      navigate('/workers');
+    } catch (err) {
+      toast.error('Could not purge worker records.', { description: err.message ?? String(err) });
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Button asChild variant="ghost" size="sm" className="-ml-2 rounded-sm"><Link to="/workers"><ApperIcon name="ArrowLeft" size={16} /> Back to workers</Link></Button>
@@ -78,6 +149,11 @@ export default function WorkerDetailPage() {
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">People / Wage statement</p>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="font-heading text-3xl font-semibold">{worker.Name}</h1>
+            {worker.isArchived_c && (
+              <span className="inline-flex rounded-sm border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive">
+                Removed from register
+              </span>
+            )}
             <span className={'inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-xs font-semibold ' + (worker.shift_c === 'Night Shift' ? 'border-indigo-500/20 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400' : 'border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400')}>
               <ApperIcon name={worker.shift_c === 'Night Shift' ? 'Moon' : 'Sun'} size={13} />
               {worker.shift_c || 'Day Shift'} · {worker.shiftTiming_c || (worker.shift_c === 'Night Shift' ? '09:00 PM - 09:00 AM' : '09:00 AM - 09:00 PM')}
@@ -87,6 +163,28 @@ export default function WorkerDetailPage() {
         </div>
         {access.canUpdate && <Button asChild variant="outline" className="rounded-sm"><Link to={'/workers/' + id + '/edit'}><ApperIcon name="Pencil" size={15} /> Edit worker</Link></Button>}
       </header>
+
+      {worker.isArchived_c && (
+        <section className="flex flex-col gap-3 rounded-sm border border-amber-500/30 bg-amber-500/10 p-4 sm:flex-row sm:items-center sm:justify-between text-sm">
+          <div>
+            <p className="font-semibold text-amber-900 dark:text-amber-200">Worker removed from register</p>
+            <p className="mt-0.5 text-xs text-amber-800/90 dark:text-amber-300">
+              This worker is archived. To remove mistaken entries, delete individual shifts below or purge all remaining records.
+            </p>
+          </div>
+          {access.canDelete && (
+            <Button
+              size="sm"
+              variant="destructive"
+              className="rounded-sm whitespace-nowrap"
+              onClick={handlePurgeWorkerAndRecords}
+            >
+              <ApperIcon name="Trash2" size={14} className="mr-1.5" />
+              Purge worker & all records
+            </Button>
+          )}
+        </section>
+      )}
 
       <PeriodControls type={periodType} onTypeChange={setPeriodType} anchorDate={anchorDate} onAnchorDateChange={setAnchorDate} />
 
@@ -128,8 +226,30 @@ export default function WorkerDetailPage() {
       <section className="overflow-hidden border border-border bg-card">
         <div className="border-b border-border px-4 py-3"><h2 className="text-sm font-semibold">Attendance and earned wages</h2></div>
         {attendanceRows.length === 0 ? <div className="p-6 text-sm text-muted-foreground">No saved attendance in {range.label}.</div> : (
-          <div className="overflow-x-auto"><table className="w-full min-w-[750px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Status</th><th className="px-4 py-3 text-right">OT (Hrs)</th><th className="px-4 py-3 text-right">Wage snapshot</th><th className="px-4 py-3 text-right">Units</th><th className="px-4 py-3 text-right">Earned</th><th className="px-4 py-3">Notes</th></tr></thead><tbody className="divide-y divide-border">{attendanceRows.map((row) => (
-            <tr key={row.Id}><td className="px-4 py-3">{formatLocalDate(row.attendanceDate_c, DATE_FORMATS.SHORT)}</td><td className="px-4 py-3">{row.status_c === 'Present' ? 'Full day' : row.status_c}</td><td className="px-4 py-3 text-right tabular-nums">{Number(row.overtimeHours_c) > 0 ? <span className="inline-flex items-center rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">+{Number(row.overtimeHours_c)} hrs</span> : <span className="text-muted-foreground">—</span>}</td><td className="px-4 py-3 text-right tabular-nums">{cash(row.wagePerDay_c ?? worker.dailyRate_c)}</td><td className="px-4 py-3 text-right tabular-nums">{Number(row.attendanceUnits_c ?? (row.status_c === 'Present' ? 1 : row.status_c === 'Half Day' ? 0.5 : 0)).toLocaleString('en-IN')}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{cash(row.earnedWage_c ?? 0)}</td><td className="px-4 py-3 text-muted-foreground">{row.notes_c || '—'}</td></tr>
+          <div className="overflow-x-auto"><table className="w-full min-w-[750px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Status</th><th className="px-4 py-3 text-right">OT (Hrs)</th><th className="px-4 py-3 text-right">Wage snapshot</th><th className="px-4 py-3 text-right">Units</th><th className="px-4 py-3 text-right">Earned</th><th className="px-4 py-3">Notes</th>{attendanceAccess.canDelete && <th className="px-4 py-3 text-right">Action</th>}</tr></thead><tbody className="divide-y divide-border">{attendanceRows.map((row) => (
+            <tr key={row.Id}>
+              <td className="px-4 py-3">{formatLocalDate(row.attendanceDate_c, DATE_FORMATS.SHORT)}</td>
+              <td className="px-4 py-3">{row.status_c === 'Present' ? 'Full day' : row.status_c}</td>
+              <td className="px-4 py-3 text-right tabular-nums">{Number(row.overtimeHours_c) > 0 ? <span className="inline-flex items-center rounded-sm bg-amber-500/10 px-1.5 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400">+{Number(row.overtimeHours_c)} hrs</span> : <span className="text-muted-foreground">—</span>}</td>
+              <td className="px-4 py-3 text-right tabular-nums">{cash(row.wagePerDay_c ?? worker.dailyRate_c)}</td>
+              <td className="px-4 py-3 text-right tabular-nums">{Number(row.attendanceUnits_c ?? (row.status_c === 'Present' ? 1 : row.status_c === 'Half Day' ? 0.5 : 0)).toLocaleString('en-IN')}</td>
+              <td className="px-4 py-3 text-right font-semibold tabular-nums">{cash(row.earnedWage_c ?? 0)}</td>
+              <td className="px-4 py-3 text-muted-foreground">{row.notes_c || '—'}</td>
+              {attendanceAccess.canDelete && (
+                <td className="px-4 py-3 text-right">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => handleDeleteAttendance(row)}
+                  >
+                    <ApperIcon name="Trash2" size={13} className="mr-1" />
+                    Delete shift
+                  </Button>
+                </td>
+              )}
+            </tr>
           ))}</tbody></table></div>
         )}
       </section>
@@ -137,8 +257,28 @@ export default function WorkerDetailPage() {
       <section className="overflow-hidden border border-border bg-card">
         <div className="border-b border-border px-4 py-3"><h2 className="text-sm font-semibold">Payments and advances</h2></div>
         {paymentRows.length === 0 ? <div className="p-6 text-sm text-muted-foreground">No separate wage transactions in {range.label}.</div> : (
-          <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Method</th><th className="px-4 py-3">Reference / notes</th><th className="px-4 py-3 text-right">Amount</th></tr></thead><tbody className="divide-y divide-border">{paymentRows.map((row) => (
-            <tr key={row.Id}><td className="px-4 py-3">{formatLocalDate(row.paymentDate_c, DATE_FORMATS.SHORT)}</td><td className="px-4 py-3">{row.transactionType_c}</td><td className="px-4 py-3">{row.paymentMethod_c}</td><td className="px-4 py-3 text-muted-foreground">{row.reference_c || row.notes_c || '—'}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{cash(row.amount_c)}</td></tr>
+          <div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="bg-muted/60 text-[11px] uppercase tracking-wider text-muted-foreground"><tr><th className="px-4 py-3">Date</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Method</th><th className="px-4 py-3">Reference / notes</th><th className="px-4 py-3 text-right">Amount</th>{paymentAccess.canDelete && <th className="px-4 py-3 text-right">Action</th>}</tr></thead><tbody className="divide-y divide-border">{paymentRows.map((row) => (
+            <tr key={row.Id}>
+              <td className="px-4 py-3">{formatLocalDate(row.paymentDate_c, DATE_FORMATS.SHORT)}</td>
+              <td className="px-4 py-3">{row.transactionType_c}</td>
+              <td className="px-4 py-3">{row.paymentMethod_c}</td>
+              <td className="px-4 py-3 text-muted-foreground">{row.reference_c || row.notes_c || '—'}</td>
+              <td className="px-4 py-3 text-right font-semibold tabular-nums">{cash(row.amount_c)}</td>
+              {paymentAccess.canDelete && (
+                <td className="px-4 py-3 text-right">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => handleDeletePayment(row)}
+                  >
+                    <ApperIcon name="Trash2" size={13} className="mr-1" />
+                    Delete
+                  </Button>
+                </td>
+              )}
+            </tr>
           ))}</tbody></table></div>
         )}
       </section>
